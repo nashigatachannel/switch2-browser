@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Switch 2 Browser</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0a0a1a; color: #eee; font-family: -apple-system, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; user-select: none; overflow-x: hidden;
+}
+
+/* === Top bar === */
+.top-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; max-width: 960px; padding: 8px 16px;
+}
+.top-bar h1 { font-size: 16px; color: #e94560; }
+#status { font-size: 11px; color: #666; }
+#status.connected { color: #0f0; }
+.top-actions { display: flex; gap: 8px; }
+.top-actions button {
+    background: #2a2a4a; border: 1px solid #3a3a5a; color: #ddd;
+    border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+}
+.top-actions button:hover { border-color: #e94560; }
+
+/* === Video screen === */
+.screen-wrap {
+    width: 100%; max-width: 960px; aspect-ratio: 16/9;
+    background: #000; border-radius: 8px; overflow: hidden;
+    position: relative; margin-bottom: 8px;
+}
+.screen-wrap video {
+    width: 100%; height: 100%; object-fit: contain;
+    background: #000;
+}
+.screen-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 14px; pointer-events: none;
+}
+.screen-overlay.hidden { display: none; }
+#deviceSelect {
+    background: #1a1a2e; border: 1px solid #3a3a5a; color: #eee;
+    border-radius: 6px; padding: 4px 8px; font-size: 11px;
+}
+
+/* === Controller === */
+.controller {
+    background: #16213e; border-radius: 20px; padding: 16px 20px;
+    max-width: 520px; width: 100%; position: relative;
+}
+
+.row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; }
+
+/* D-pad */
+.dpad { display: grid; grid-template: 44px 44px 44px / 44px 44px 44px; gap: 2px; }
+.dpad .btn { background: #2a2a4a; border-radius: 4px; }
+.dpad .center { background: transparent; }
+
+/* Face buttons */
+.face { display: grid; grid-template: 44px 44px 44px / 44px 44px 44px; gap: 2px; }
+.face .center { background: transparent; }
+
+/* Common button style */
+.btn {
+    background: #2a2a4a; border: 2px solid #3a3a5a; border-radius: 8px;
+    color: #ddd; font-size: 14px; font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 0.05s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+.btn:hover { border-color: #e94560; }
+.btn.active { background: #e94560; border-color: #ff6b81; color: #fff; transform: scale(0.95); }
+
+/* Shoulder buttons */
+.shoulder { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
+.shoulder .btn { width: 100px; height: 36px; font-size: 13px; }
+
+/* Trigger buttons */
+.trigger { display: flex; gap: 8px; justify-content: center; margin-bottom: 6px; }
+.trigger .btn { width: 100px; height: 30px; font-size: 12px; border-radius: 12px; }
+
+/* Middle buttons */
+.middle { display: flex; gap: 12px; justify-content: center; }
+.middle .btn { width: 52px; height: 28px; font-size: 11px; border-radius: 16px; }
+
+/* Sticks */
+.stick-area {
+    width: 90px; height: 90px; background: #2a2a4a; border-radius: 50%;
+    position: relative; border: 2px solid #3a3a5a;
+}
+.stick-dot {
+    width: 30px; height: 30px; background: #e94560; border-radius: 50%;
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%); transition: all 0.05s;
+}
+.stick-area.active .stick-dot { background: #ff6b81; }
+
+/* Bottom bar */
+.bottom-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #16213e; border-radius: 12px; padding: 6px 12px;
+    max-width: 520px; width: 100%; margin-top: 8px; font-size: 11px;
+}
+#gamepadStatus { color: #888; }
+#gamepadStatus.active { color: #0f0; }
+.gp-toggle { display: flex; align-items: center; gap: 4px; color: #aaa; font-size: 11px; cursor: pointer; }
+.gp-toggle input { cursor: pointer; }
+
+/* Keyboard hint */
+.hint { font-size: 10px; color: #444; margin-top: 6px; text-align: center; }
+
+/* Fullscreen mode */
+:fullscreen .top-bar { display: none; }
+:fullscreen .screen-wrap { max-width: 100%; border-radius: 0; flex: 1; }
+:fullscreen body { justify-content: center; }
+
+/* Macro panel */
+.macro-panel {
+    background: #16213e; border-radius: 16px; padding: 12px;
+    max-width: 520px; width: 100%; margin-top: 12px; margin-bottom: 16px;
+}
+.macro-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.macro-header h2 { font-size:14px; color:#e94560; }
+.macro-add-btn {
+    background:#e94560; color:#fff; border:none; border-radius:8px;
+    padding:4px 12px; font-size:11px; cursor:pointer;
+}
+.macro-item {
+    display:flex; justify-content:space-between; align-items:center;
+    background:#2a2a4a; border-radius:8px; padding:6px 10px; margin-bottom:4px;
+}
+.macro-item .info { flex:1; }
+.macro-item .name { font-size:12px; font-weight:bold; }
+.macro-item .desc { font-size:10px; color:#888; }
+.macro-item .actions { display:flex; gap:4px; }
+.macro-item .actions button {
+    background:#3a3a5a; border:1px solid #4a4a6a; color:#ddd;
+    border-radius:6px; padding:3px 8px; font-size:10px; cursor:pointer;
+}
+.macro-item .actions button.run { background:#0a7; border-color:#0c9; }
+.macro-item .actions button.loop { background:#07a; border-color:#09c; }
+.macro-item .actions button.loop.active { background:#c40; border-color:#f63; }
+
+/* Modal */
+.modal-overlay {
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:100;
+}
+.modal {
+    background:#1a1a2e; border:1px solid #3a3a5a; border-radius:16px;
+    padding:20px; width:90%; max-width:480px; max-height:85vh; overflow-y:auto;
+}
+.modal.modal-wide { max-width:90vw; width:auto; min-width:600px; }
+.modal h3 { font-size:15px; color:#e94560; margin-bottom:12px; }
+.modal label { display:inline-block; font-size:12px; color:#888; margin-bottom:8px; }
+.modal input, .modal select {
+    background:#2a2a4a; border:1px solid #3a3a5a; color:#eee;
+    border-radius:6px; padding:5px 8px; font-size:13px; margin-top:2px;
+}
+.macro-top-row { display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-bottom:12px; }
+.macro-top-row > label:first-child { flex:1; min-width:120px; }
+.macro-top-row > label:first-child input { width:100%; }
+.macro-settings { display:flex; gap:10px; align-items:flex-end; }
+.macro-settings label { display:flex; flex-direction:column; }
+.macro-settings select, .macro-settings input { width:80px; }
+.frame-input { display:flex; align-items:center; gap:2px; font-size:13px; color:#aaa; }
+.frame-input input { width:60px; }
+.duration-hint { font-size:11px; color:#666; align-self:flex-end; padding-bottom:4px; }
+
+.timeline-wrap { overflow-x:auto; overflow-y:auto; max-height:50vh; border:1px solid #2a2a4a; border-radius:8px; }
+.timeline { display:inline-grid; }
+.tl-corner { background:#0e0e1f; position:sticky; left:0; z-index:3; }
+.tl-frame-hdr {
+    font-size:9px; color:#666; text-align:center; padding:1px 0;
+    background:#0e0e1f; position:sticky; top:0; z-index:2;
+    border-bottom:1px solid #2a2a4a;
+}
+.tl-frame-hdr.beat { color:#e94560; }
+.tl-label {
+    font-size:11px; color:#aaa; padding:0 6px; white-space:nowrap;
+    background:#0e0e1f; position:sticky; left:0; z-index:1;
+    display:flex; align-items:center; border-right:1px solid #2a2a4a;
+}
+.tl-cell {
+    width:18px; height:20px; border:1px solid #1a1a2e;
+    background:#1e1e3a; cursor:crosshair;
+}
+.tl-cell:hover { background:#2a2a5a; }
+.tl-cell.on { background:#e94560; }
+.tl-cell.beat-col { border-left:1px solid #2a2a4a; }
+.timeline-hint { font-size:10px; color:#555; margin-top:6px; }
+
+.modal-actions { display:flex; gap:8px; margin-top:16px; }
+.modal-actions button {
+    flex:1; padding:8px; border:none; border-radius:8px; font-size:13px; cursor:pointer;
+    background:#e94560; color:#fff;
+}
+.modal-actions .cancel { background:#3a3a5a; color:#ddd; }
+.modal-actions .delete { background:#a00; color:#fff; flex:0.5; }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="top-bar">
+    <h1>Switch 2 Browser</h1>
+    <div style="display:flex; align-items:center; gap:12px;">
+        <select id="deviceSelect"><option value="">映像デバイスを選択...</option></select>
+        <span id="status">Connecting...</span>
+    </div>
+    <div class="top-actions">
+        <button onclick="toggleFullscreen()">全画面</button>
+    </div>
+</div>
+
+<!-- Video screen -->
+<div class="screen-wrap" id="screenWrap">
+    <video id="videoEl" autoplay playsinline muted></video>
+    <div class="screen-overlay" id="screenOverlay">HDMI入力を選択してください</div>
+</div>
+
+<!-- Controller -->
+<div class="controller">
+    <div class="trigger">
+        <div class="btn" data-btn="zl">ZL</div>
+        <div class="btn" data-btn="zr">ZR</div>
+    </div>
+    <div class="shoulder">
+        <div class="btn" data-btn="l">L</div>
+        <div class="btn" data-btn="r">R</div>
+    </div>
+    <div class="row">
+        <div class="dpad">
+            <div class="center"></div>
+            <div class="btn" data-btn="up">↑</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="left">←</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="right">→</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="down">↓</div>
+            <div class="center"></div>
+        </div>
+        <div class="face">
+            <div class="center"></div>
+            <div class="btn" data-btn="x">X</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="y">Y</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="a">A</div>
+            <div class="center"></div>
+            <div class="btn" data-btn="b">B</div>
+            <div class="center"></div>
+        </div>
+    </div>
+    <div class="row" style="justify-content: space-around; margin: 12px 0;">
+        <div class="stick-area" id="lstick">
+            <div class="stick-dot" id="lstick-dot"></div>
+        </div>
+        <div class="stick-area" id="rstick">
+            <div class="stick-dot" id="rstick-dot"></div>
+        </div>
+    </div>
+    <div class="middle">
+        <div class="btn" data-btn="minus">−</div>
+        <div class="btn" data-btn="home">⌂</div>
+        <div class="btn" data-btn="capture">◻</div>
+        <div class="btn" data-btn="plus">＋</div>
+    </div>
+</div>
+
+<!-- Bottom bar -->
+<div class="bottom-bar">
+    <span id="gamepadStatus">コントローラー未検出</span>
+    <label class="gp-toggle"><input type="checkbox" id="gamepadEnabled" checked> パッド</label>
+    <label class="gp-toggle"><input type="checkbox" id="keyboardEnabled" checked> キーボード</label>
+</div>
+
+<div class="hint">
+    Keys: Arrow=D-pad B=B A=A Y=Y X=X L=L R=R M=ZL S=ZR | H=Home Enter=+ Backspace=− | F11=全画面
+</div>
+
+<!-- Macro Panel -->
+<div class="macro-panel" id="macroPanel">
+    <div class="macro-header">
+        <h2>Macros</h2>
+        <button class="macro-add-btn" onclick="openMacroEditor()">+ 新規</button>
+    </div>
+    <div id="macroList"></div>
+</div>
+
+<!-- Macro Editor Modal -->
+<div class="modal-overlay" id="macroModal" style="display:none">
+    <div class="modal modal-wide">
+        <h3 id="modalTitle">マクロ作成</h3>
+        <div class="macro-top-row">
+            <label>名前<input type="text" id="macroName" placeholder="マクロ名"></label>
+            <div class="macro-settings">
+                <label>FPS
+                    <select id="macroFps"><option value="60">60fps</option><option value="30">30fps</option></select>
+                </label>
+                <label>長さ
+                    <div class="frame-input"><input type="number" id="macroLength" value="60" min="1" max="9999">F</div>
+                </label>
+                <span id="macroDuration" class="duration-hint">= 1.00s</span>
+            </div>
+        </div>
+        <div class="timeline-wrap">
+            <div class="timeline" id="timeline"></div>
+        </div>
+        <div class="timeline-hint">クリック: ON/OFF切替　ドラッグ: 範囲塗り　Shift+クリック: 行全消去</div>
+        <div class="modal-actions">
+            <button onclick="saveMacro()">保存</button>
+            <button class="cancel" onclick="closeMacroEditor()">キャンセル</button>
+            <button class="delete" id="deleteBtn" onclick="deleteMacro()" style="display:none">削除</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ===========================
+// Video Capture (getUserMedia)
+// ===========================
+const videoEl = document.getElementById('videoEl');
+const deviceSelect = document.getElementById('deviceSelect');
+const screenOverlay = document.getElementById('screenOverlay');
+let currentStream = null;
+
+async function enumerateVideoDevices() {
+    // Request temporary access to get labels
+    try {
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        tempStream.getTracks().forEach(t => t.stop());
+    } catch(e) {}
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+    deviceSelect.innerHTML = '<option value="">映像デバイスを選択...</option>';
+    videoInputs.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${d.deviceId.slice(0,8)}`;
+        // Auto-select Live Gamer DUO
+        if (d.label.includes('Live Gamer DUO')) {
+            opt.selected = true;
+        }
+        deviceSelect.appendChild(opt);
+    });
+
+    // Auto-start if a device was auto-selected
+    if (deviceSelect.value) {
+        startCapture(deviceSelect.value);
+    }
+}
+
+async function startCapture(deviceId) {
+    if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+    }
+    if (!deviceId) {
+        videoEl.srcObject = null;
+        screenOverlay.classList.remove('hidden');
+        return;
+    }
+    try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                deviceId: { exact: deviceId },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+            },
+            audio: false,
+        });
+        videoEl.srcObject = currentStream;
+        screenOverlay.classList.add('hidden');
+    } catch(e) {
+        console.error('Capture error:', e);
+        screenOverlay.textContent = `エラー: ${e.message}`;
+        screenOverlay.classList.remove('hidden');
+    }
+}
+
+deviceSelect.addEventListener('change', () => startCapture(deviceSelect.value));
+
+function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+    } else {
+        document.exitFullscreen();
+    }
+}
+
+// Init video devices
+enumerateVideoDevices();
+
+// ===========================
+// Button mapping
+// ===========================
+const BTN = {
+    y:  {byte:0, bit:1<<0}, b:  {byte:0, bit:1<<1}, a:  {byte:0, bit:1<<2},
+    x:  {byte:0, bit:1<<3}, l:  {byte:0, bit:1<<4}, r:  {byte:0, bit:1<<5},
+    zl: {byte:0, bit:1<<6}, zr: {byte:0, bit:1<<7},
+    minus:  {byte:1, bit:1<<0}, plus:    {byte:1, bit:1<<1},
+    lstick: {byte:1, bit:1<<2}, rstick:  {byte:1, bit:1<<3},
+    home:   {byte:1, bit:1<<4}, capture: {byte:1, bit:1<<5},
+};
+const HAT_MAP = {
+    up:0, upright:1, right:2, downright:3,
+    down:4, downleft:5, left:6, upleft:7, neutral:8
+};
+const KEY_MAP = {
+    ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+    b:'b', a:'a', y:'y', x:'x', l:'l', r:'r', m:'zl', s:'zr',
+    h:'home', Enter:'plus', Backspace:'minus', c:'capture',
+};
+
+// ===========================
+// Controller State
+// ===========================
+let state = { btn0:0, btn1:0, hat:8, lx:128, ly:128, rx:128, ry:128 };
+let pressed = new Set();
+let ws = null;
+let sendInterval = null;
+
+// ===========================
+// WebSocket
+// ===========================
+function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => {
+        document.getElementById('status').textContent = 'Connected';
+        document.getElementById('status').className = 'connected';
+        startSending();
+    };
+    ws.onclose = () => {
+        document.getElementById('status').textContent = 'Disconnected';
+        document.getElementById('status').className = '';
+        stopSending();
+        setTimeout(connect, 1000);
+    };
+}
+
+function startSending() {
+    if (sendInterval) return;
+    sendInterval = setInterval(() => {
+        pollGamepad();
+        if (ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ cmd:'report', ...state }));
+        }
+    }, 16);
+}
+
+function stopSending() {
+    if (sendInterval) { clearInterval(sendInterval); sendInterval = null; }
+}
+
+// ===========================
+// Update state from pressed buttons
+// ===========================
+function updateState() {
+    let btn0=0, btn1=0, hat=8;
+    for (const name of pressed) {
+        if (BTN[name]) {
+            if (BTN[name].byte === 0) btn0 |= BTN[name].bit;
+            else btn1 |= BTN[name].bit;
+        }
+    }
+    const u = pressed.has('up'), d = pressed.has('down');
+    const l = pressed.has('left'), r = pressed.has('right');
+    if (u && r) hat = HAT_MAP.upright;
+    else if (u && l) hat = HAT_MAP.upleft;
+    else if (d && r) hat = HAT_MAP.downright;
+    else if (d && l) hat = HAT_MAP.downleft;
+    else if (u) hat = HAT_MAP.up;
+    else if (d) hat = HAT_MAP.down;
+    else if (l) hat = HAT_MAP.left;
+    else if (r) hat = HAT_MAP.right;
+    else hat = HAT_MAP.neutral;
+
+    state.btn0 = btn0; state.btn1 = btn1; state.hat = hat;
+
+    document.querySelectorAll('.btn[data-btn]').forEach(el => {
+        el.classList.toggle('active', pressed.has(el.dataset.btn));
+    });
+}
+
+// ===========================
+// Pointer events for on-screen buttons
+// ===========================
+document.querySelectorAll('.btn[data-btn]').forEach(el => {
+    const name = el.dataset.btn;
+    el.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); el.setPointerCapture(e.pointerId);
+        pressed.add(name); updateState();
+    });
+    el.addEventListener('pointerup', (e) => {
+        e.preventDefault(); pressed.delete(name); updateState();
+    });
+    el.addEventListener('pointercancel', () => { pressed.delete(name); updateState(); });
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+});
+
+// ===========================
+// Keyboard events
+// ===========================
+document.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    if (!document.getElementById('keyboardEnabled').checked) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const name = KEY_MAP[e.key] || KEY_MAP[e.key.toLowerCase()];
+    if (name) { e.preventDefault(); pressed.add(name); updateState(); }
+});
+document.addEventListener('keyup', (e) => {
+    const name = KEY_MAP[e.key] || KEY_MAP[e.key.toLowerCase()];
+    if (name) { e.preventDefault(); pressed.delete(name); updateState(); }
+});
+
+// ===========================
+// Analog stick drag
+// ===========================
+function setupStick(areaId, dotId, xKey, yKey) {
+    const area = document.getElementById(areaId);
+    const dot = document.getElementById(dotId);
+    let dragging = false;
+
+    function update(clientX, clientY) {
+        const rect = area.getBoundingClientRect();
+        const cx = rect.left + rect.width/2;
+        const cy = rect.top + rect.height/2;
+        let dx = (clientX - cx) / (rect.width/2);
+        let dy = (clientY - cy) / (rect.height/2);
+        const mag = Math.sqrt(dx*dx + dy*dy);
+        if (mag > 1) { dx /= mag; dy /= mag; }
+        state[xKey] = Math.round(128 + dx * 127);
+        state[yKey] = Math.round(128 + dy * 127);
+        dot.style.transform = `translate(${-50 + dx*35}%, ${-50 + dy*35}%)`;
+        area.classList.add('active');
+    }
+
+    function reset() {
+        dragging = false;
+        state[xKey] = 128; state[yKey] = 128;
+        dot.style.transform = 'translate(-50%, -50%)';
+        area.classList.remove('active');
+    }
+
+    area.addEventListener('mousedown', (e) => { dragging = true; update(e.clientX, e.clientY); });
+    window.addEventListener('mousemove', (e) => { if (dragging) update(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', () => { if (dragging) reset(); });
+
+    area.addEventListener('touchstart', (e) => {
+        e.preventDefault(); dragging = true;
+        update(e.touches[0].clientX, e.touches[0].clientY);
+    }, {passive:false});
+    area.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (dragging) update(e.touches[0].clientX, e.touches[0].clientY);
+    }, {passive:false});
+    area.addEventListener('touchend', (e) => { e.preventDefault(); reset(); }, {passive:false});
+    area.addEventListener('touchcancel', reset);
+}
+
+setupStick('lstick', 'lstick-dot', 'lx', 'ly');
+setupStick('rstick', 'rstick-dot', 'rx', 'ry');
+
+// ===========================
+// Gamepad Passthrough
+// ===========================
+let gamepadIndex = null;
+let gamepadActive = false;
+
+window.addEventListener('gamepadconnected', (e) => {
+    gamepadIndex = e.gamepad.index;
+    const s = document.getElementById('gamepadStatus');
+    s.textContent = e.gamepad.id;
+    s.className = 'active';
+    gamepadActive = true;
+});
+
+window.addEventListener('gamepaddisconnected', (e) => {
+    if (e.gamepad.index === gamepadIndex) {
+        gamepadIndex = null; gamepadActive = false;
+        const s = document.getElementById('gamepadStatus');
+        s.textContent = 'コントローラー切断';
+        s.className = '';
+    }
+});
+
+function pollGamepad() {
+    if (!gamepadActive || gamepadIndex === null) return;
+    if (!document.getElementById('gamepadEnabled').checked) return;
+
+    const gp = navigator.getGamepads()[gamepadIndex];
+    if (!gp) return;
+
+    const b = gp.buttons;
+    const ax = gp.axes;
+
+    let btn0 = 0;
+    if (b[3] && b[3].pressed) btn0 |= 1 << 0;  // Y
+    if (b[1] && b[1].pressed) btn0 |= 1 << 1;  // B
+    if (b[0] && b[0].pressed) btn0 |= 1 << 2;  // A
+    if (b[2] && b[2].pressed) btn0 |= 1 << 3;  // X
+    if (b[4] && b[4].pressed) btn0 |= 1 << 4;  // L
+    if (b[5] && b[5].pressed) btn0 |= 1 << 5;  // R
+    if (b[6] && b[6].pressed) btn0 |= 1 << 6;  // ZL
+    if (b[7] && b[7].pressed) btn0 |= 1 << 7;  // ZR
+
+    let btn1 = 0;
+    if (b[8] && b[8].pressed)  btn1 |= 1 << 0; // Minus
+    if (b[9] && b[9].pressed)  btn1 |= 1 << 1; // Plus
+    if (b[10] && b[10].pressed) btn1 |= 1 << 2; // L-Stick press
+    if (b[11] && b[11].pressed) btn1 |= 1 << 3; // R-Stick press
+    if (b[16] && b[16].pressed) btn1 |= 1 << 4; // Home
+
+    const du = b[12] && b[12].pressed;
+    const dd = b[13] && b[13].pressed;
+    const dl = b[14] && b[14].pressed;
+    const dr = b[15] && b[15].pressed;
+    let hat = 8;
+    if (du && dr) hat = 1;
+    else if (du && dl) hat = 7;
+    else if (dd && dr) hat = 3;
+    else if (dd && dl) hat = 5;
+    else if (du) hat = 0;
+    else if (dd) hat = 4;
+    else if (dl) hat = 6;
+    else if (dr) hat = 2;
+
+    const clamp = (v) => Math.max(0, Math.min(255, Math.round(128 + v * 127)));
+    const lx = clamp(ax[0] || 0);
+    const ly = clamp(ax[1] || 0);
+    const rx = clamp(ax[2] || 0);
+    const ry = clamp(ax[3] || 0);
+
+    state.btn0 = btn0; state.btn1 = btn1; state.hat = hat;
+    state.lx = lx; state.ly = ly; state.rx = rx; state.ry = ry;
+
+    // Update visuals
+    const gpBtnMap = {
+        a: !!(btn0 & 4), b: !!(btn0 & 2), x: !!(btn0 & 8), y: !!(btn0 & 1),
+        l: !!(btn0 & 16), r: !!(btn0 & 32), zl: !!(btn0 & 64), zr: !!(btn0 & 128),
+        minus: !!(btn1 & 1), plus: !!(btn1 & 2), home: !!(btn1 & 16), capture: !!(btn1 & 32),
+        up: du, down: dd, left: dl, right: dr,
+    };
+    document.querySelectorAll('.btn[data-btn]').forEach(el => {
+        el.classList.toggle('active', !!gpBtnMap[el.dataset.btn]);
+    });
+
+    const updateDot = (dotId, x, y) => {
+        const dx = (x - 128) / 127;
+        const dy = (y - 128) / 127;
+        document.getElementById(dotId).style.transform = `translate(${-50+dx*35}%, ${-50+dy*35}%)`;
+    };
+    updateDot('lstick-dot', lx, ly);
+    updateDot('rstick-dot', rx, ry);
+}
+
+// ===========================
+// Macro System
+// ===========================
+let macrosData = { macros: [] };
+let editingIdx = -1;
+
+const TRACKS = [
+    { id:'a',  label:'A',  byte:0, bit:1<<2 },
+    { id:'b',  label:'B',  byte:0, bit:1<<1 },
+    { id:'x',  label:'X',  byte:0, bit:1<<3 },
+    { id:'y',  label:'Y',  byte:0, bit:1<<0 },
+    { id:'l',  label:'L',  byte:0, bit:1<<4 },
+    { id:'r',  label:'R',  byte:0, bit:1<<5 },
+    { id:'zl', label:'ZL', byte:0, bit:1<<6 },
+    { id:'zr', label:'ZR', byte:0, bit:1<<7 },
+    { id:'up',   label:'↑', hat:0 },
+    { id:'down', label:'↓', hat:4 },
+    { id:'left', label:'←', hat:6 },
+    { id:'right',label:'→', hat:2 },
+    { id:'plus',   label:'+',   byte:1, bit:1<<1 },
+    { id:'minus',  label:'−',   byte:1, bit:1<<0 },
+    { id:'home',   label:'Home',byte:1, bit:1<<4 },
+    { id:'capture',label:'Cap', byte:1, bit:1<<5 },
+];
+
+let tlGrid = [];
+let tlLength = 60;
+let tlFps = 60;
+let tlDragging = false;
+let tlDragValue = true;
+
+function updateDurationHint() {
+    const fps = parseInt(document.getElementById('macroFps').value);
+    const len = parseInt(document.getElementById('macroLength').value) || 1;
+    document.getElementById('macroDuration').textContent = `= ${(len / fps).toFixed(2)}s`;
+}
+
+function buildTimeline() {
+    tlFps = parseInt(document.getElementById('macroFps').value);
+    tlLength = parseInt(document.getElementById('macroLength').value) || 1;
+    while (tlGrid.length < TRACKS.length) tlGrid.push([]);
+    for (let t = 0; t < TRACKS.length; t++) {
+        if (!tlGrid[t]) tlGrid[t] = [];
+        while (tlGrid[t].length < tlLength) tlGrid[t].push(false);
+        tlGrid[t].length = tlLength;
+    }
+
+    const el = document.getElementById('timeline');
+    el.style.gridTemplateColumns = `56px repeat(${tlLength}, 18px)`;
+    el.style.gridTemplateRows = `20px repeat(${TRACKS.length}, 20px)`;
+    el.innerHTML = '';
+
+    const corner = document.createElement('div');
+    corner.className = 'tl-corner tl-frame-hdr';
+    corner.textContent = 'F#';
+    el.appendChild(corner);
+
+    for (let f = 0; f < tlLength; f++) {
+        const hdr = document.createElement('div');
+        hdr.className = 'tl-frame-hdr' + (f % 10 === 0 ? ' beat' : '');
+        hdr.textContent = (f % 5 === 0) ? f : '';
+        el.appendChild(hdr);
+    }
+
+    for (let t = 0; t < TRACKS.length; t++) {
+        const lbl = document.createElement('div');
+        lbl.className = 'tl-label';
+        lbl.textContent = TRACKS[t].label;
+        lbl.addEventListener('click', (e) => {
+            if (e.shiftKey) { tlGrid[t].fill(false); renderCells(); }
+        });
+        el.appendChild(lbl);
+
+        for (let f = 0; f < tlLength; f++) {
+            const cell = document.createElement('div');
+            cell.className = 'tl-cell' + (tlGrid[t][f] ? ' on' : '') + (f % 10 === 0 ? ' beat-col' : '');
+            cell.dataset.t = t; cell.dataset.f = f;
+            cell.addEventListener('mousedown', (e) => {
+                e.preventDefault(); tlDragging = true;
+                tlDragValue = !tlGrid[t][f];
+                tlGrid[t][f] = tlDragValue;
+                cell.classList.toggle('on', tlDragValue);
+            });
+            cell.addEventListener('mouseenter', () => {
+                if (tlDragging) {
+                    tlGrid[t][f] = tlDragValue;
+                    cell.classList.toggle('on', tlDragValue);
+                }
+            });
+            el.appendChild(cell);
+        }
+    }
+    updateDurationHint();
+}
+
+function renderCells() {
+    document.querySelectorAll('.tl-cell').forEach(cell => {
+        const t = parseInt(cell.dataset.t);
+        const f = parseInt(cell.dataset.f);
+        cell.classList.toggle('on', !!tlGrid[t][f]);
+    });
+}
+
+document.addEventListener('mouseup', () => { tlDragging = false; });
+
+function gridToSteps() {
+    const msPerFrame = Math.round(1000 / tlFps);
+    const steps = [];
+    for (let f = 0; f < tlLength; f++) {
+        let btn0=0, btn1=0, hat=8;
+        for (let t = 0; t < TRACKS.length; t++) {
+            if (!tlGrid[t][f]) continue;
+            const tr = TRACKS[t];
+            if (tr.hat !== undefined) hat = tr.hat;
+            else if (tr.byte === 0) btn0 |= tr.bit;
+            else btn1 |= tr.bit;
+        }
+        const last = steps.length ? steps[steps.length-1] : null;
+        if (last && last.btn0===btn0 && last.btn1===btn1 && last.hat===hat) {
+            last.duration_ms += msPerFrame;
+        } else {
+            steps.push({ btn0, btn1, hat, lx:128, ly:128, rx:128, ry:128, duration_ms: msPerFrame });
+        }
+    }
+    return steps;
+}
+
+function stepsToGrid(steps, fps) {
+    const msPerFrame = 1000 / fps;
+    const grid = TRACKS.map(() => []);
+    let frame = 0;
+    for (const s of steps) {
+        const numFrames = Math.max(1, Math.round(s.duration_ms / msPerFrame));
+        for (let i = 0; i < numFrames; i++) {
+            for (let t = 0; t < TRACKS.length; t++) {
+                const tr = TRACKS[t];
+                let on = false;
+                if (tr.hat !== undefined) on = (s.hat === tr.hat);
+                else if (tr.byte === 0) on = !!(s.btn0 & tr.bit);
+                else on = !!(s.btn1 & tr.bit);
+                grid[t][frame] = on;
+            }
+            frame++;
+        }
+    }
+    return { grid, length: frame };
+}
+
+async function loadMacros() {
+    const r = await fetch('/api/macros');
+    macrosData = await r.json();
+    renderMacroList();
+}
+
+function macroSummary(m) {
+    const fps = m.fps || 60;
+    const totalMs = m.steps.reduce((s,st) => s + (st.duration_ms||0), 0);
+    const totalF = Math.round(totalMs / (1000/fps));
+    const used = new Set();
+    for (const s of m.steps) {
+        for (const tr of TRACKS) {
+            if (tr.hat !== undefined) { if (s.hat === tr.hat) used.add(tr.label); }
+            else if (tr.byte === 0) { if (s.btn0 & tr.bit) used.add(tr.label); }
+            else { if (s.btn1 & tr.bit) used.add(tr.label); }
+        }
+    }
+    return `${[...used].join('+')} ${totalF}F (${(totalMs/1000).toFixed(1)}s) @${fps}fps`;
+}
+
+function renderMacroList() {
+    const el = document.getElementById('macroList');
+    if (!macrosData.macros.length) {
+        el.innerHTML = '<div style="color:#555;font-size:11px;text-align:center;padding:6px">マクロなし</div>';
+        return;
+    }
+    el.innerHTML = macrosData.macros.map((m, i) => `
+        <div class="macro-item">
+            <div class="info">
+                <div class="name">${m.name}</div>
+                <div class="desc">${macroSummary(m)}</div>
+            </div>
+            <div class="actions">
+                <button class="run" onclick="runMacro(${i})">▶</button>
+                <button class="loop" onclick="toggleLoop(${i}, this)">🔁</button>
+                <button class="edit" onclick="editMacro(${i})">編集</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+let loopingIdx = -1;
+
+async function runMacro(idx) {
+    if (loopingIdx >= 0) await stopLoop();
+    await fetch(`/api/macros/run/${idx}`, {method:'POST'});
+}
+
+async function toggleLoop(idx, btn) {
+    if (loopingIdx === idx) {
+        await stopLoop();
+    } else {
+        if (loopingIdx >= 0) await stopLoop();
+        loopingIdx = idx;
+        btn.classList.add('active');
+        await fetch(`/api/macros/loop/${idx}`, {method:'POST'});
+    }
+}
+
+async function stopLoop() {
+    await fetch('/api/macros/stop', {method:'POST'});
+    loopingIdx = -1;
+    document.querySelectorAll('.macro-item .loop').forEach(b => b.classList.remove('active'));
+}
+
+function openMacroEditor() {
+    editingIdx = -1;
+    document.getElementById('modalTitle').textContent = 'マクロ作成';
+    document.getElementById('macroName').value = '';
+    document.getElementById('macroFps').value = '60';
+    document.getElementById('macroLength').value = '60';
+    document.getElementById('deleteBtn').style.display = 'none';
+    tlGrid = TRACKS.map(() => new Array(60).fill(false));
+    buildTimeline();
+    document.getElementById('macroModal').style.display = 'flex';
+}
+
+function editMacro(idx) {
+    editingIdx = idx;
+    const m = macrosData.macros[idx];
+    document.getElementById('modalTitle').textContent = 'マクロ編集';
+    document.getElementById('macroName').value = m.name;
+    document.getElementById('macroFps').value = String(m.fps || 60);
+    document.getElementById('deleteBtn').style.display = 'block';
+    const fps = m.fps || 60;
+    const { grid, length } = stepsToGrid(m.steps, fps);
+    tlGrid = grid;
+    document.getElementById('macroLength').value = length || 60;
+    buildTimeline();
+    document.getElementById('macroModal').style.display = 'flex';
+}
+
+function closeMacroEditor() {
+    document.getElementById('macroModal').style.display = 'none';
+}
+
+document.addEventListener('change', (e) => {
+    if (e.target.id === 'macroFps' || e.target.id === 'macroLength') buildTimeline();
+});
+document.addEventListener('input', (e) => {
+    if (e.target.id === 'macroLength') updateDurationHint();
+});
+
+async function saveMacro() {
+    const name = document.getElementById('macroName').value.trim();
+    if (!name) { alert('名前を入力'); return; }
+    const fps = parseInt(document.getElementById('macroFps').value);
+    const steps = gridToSteps();
+    const macro = { name, fps, steps };
+    if (editingIdx >= 0) macrosData.macros[editingIdx] = macro;
+    else macrosData.macros.push(macro);
+    await fetch('/api/macros', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(macrosData)
+    });
+    closeMacroEditor();
+    renderMacroList();
+}
+
+async function deleteMacro() {
+    if (editingIdx < 0) return;
+    if (!confirm('削除する？')) return;
+    macrosData.macros.splice(editingIdx, 1);
+    await fetch('/api/macros', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(macrosData)
+    });
+    closeMacroEditor();
+    renderMacroList();
+}
+
+// ===========================
+// Start
+// ===========================
+connect();
+loadMacros();
+</script>
+</body>
+</html>
