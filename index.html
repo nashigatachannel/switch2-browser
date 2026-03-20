@@ -782,18 +782,35 @@ function updateState() {
 }
 
 // ===========================
-// Pointer events for on-screen buttons
+// Pointer events for on-screen buttons (with min hold buffer)
 // ===========================
+const MIN_HOLD_MS = 66; // 2F@30fps — ゲームが確実に認識する最低保持時間
+const btnHoldTimers = {}; // { btnName: timeoutId }
+
 document.querySelectorAll('.btn[data-btn]').forEach(el => {
     const name = el.dataset.btn;
     el.addEventListener('pointerdown', (e) => {
         e.preventDefault(); el.setPointerCapture(e.pointerId);
+        // Cancel any pending release
+        if (btnHoldTimers[name]) { clearTimeout(btnHoldTimers[name]); delete btnHoldTimers[name]; }
         pressed.add(name); updateState();
     });
     el.addEventListener('pointerup', (e) => {
-        e.preventDefault(); pressed.delete(name); updateState();
+        e.preventDefault();
+        // Delay release by MIN_HOLD_MS to ensure input registers
+        if (btnHoldTimers[name]) clearTimeout(btnHoldTimers[name]);
+        btnHoldTimers[name] = setTimeout(() => {
+            pressed.delete(name); updateState();
+            delete btnHoldTimers[name];
+        }, MIN_HOLD_MS);
     });
-    el.addEventListener('pointercancel', () => { pressed.delete(name); updateState(); });
+    el.addEventListener('pointercancel', () => {
+        if (btnHoldTimers[name]) clearTimeout(btnHoldTimers[name]);
+        btnHoldTimers[name] = setTimeout(() => {
+            pressed.delete(name); updateState();
+            delete btnHoldTimers[name];
+        }, MIN_HOLD_MS);
+    });
     el.addEventListener('contextmenu', (e) => e.preventDefault());
 });
 
