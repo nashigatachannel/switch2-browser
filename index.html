@@ -1351,17 +1351,23 @@ function drawOverlay() {
             overlayCtx.stroke();
         }
 
-        // Labels
+        // Labels (x/y relative to center, center = 0/0)
         if (showLabels && cellW > 14 && cellH > 14) {
+            const centerCol = Math.floor(cols / 2);
+            const centerRow = Math.floor(rows / 2);
             overlayCtx.globalAlpha = Math.min(1, opacity + 0.3);
-            overlayCtx.fillStyle = labelColor;
             overlayCtx.font = `bold ${labelSize}px monospace`;
             overlayCtx.textAlign = 'center';
             overlayCtx.textBaseline = 'middle';
             for (let r = 0; r < rows; r++) {
                 for (let c = 0; c < cols; c++) {
-                    const colLabel = String.fromCharCode(65 + (c % 26));
-                    const label = `${colLabel}${r}`;
+                    const rx2 = c - centerCol;
+                    const ry2 = r - centerRow;
+                    const isCenter = rx2 === 0 && ry2 === 0;
+                    const xStr = rx2 === 0 ? '0' : (rx2 > 0 ? `→${rx2}` : `←${-rx2}`);
+                    const yStr = ry2 === 0 ? '0' : (ry2 > 0 ? `↓${ry2}` : `↑${-ry2}`);
+                    const label = `${xStr}/${yStr}`;
+                    overlayCtx.fillStyle = isCenter ? '#ffff00' : labelColor;
                     overlayCtx.fillText(label, rx + c * cellW + cellW / 2, ry + r * cellH + cellH / 2);
                 }
             }
