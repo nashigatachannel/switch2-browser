@@ -419,6 +419,12 @@ body {
             <input type="range" id="gOpacity" min="0.1" max="1" step="0.05" value="0.5" style="flex:1;" oninput="applyGridUI()">
             <span id="gOpacityVal" style="width:40px;text-align:right;">0.50</span>
         </div>
+        <div style="display:flex;align-items:center;gap:4px;">
+            <label class="gp-toggle"><input type="checkbox" id="gObstacle" checked onchange="applyGridUI()"> 障害物検出</label>
+            <span style="width:50px;text-align:right;font-size:10px;">閾値</span>
+            <input type="range" id="gObsThreshold" min="30" max="200" step="5" value="130" style="flex:1;" oninput="applyGridUI()">
+            <span id="gObsThresholdVal" style="width:30px;text-align:right;">130</span>
+        </div>
         <div style="display:flex;gap:8px;">
             <label class="gp-toggle"><input type="checkbox" id="gClipAuto" checked onchange="applyGridUI()"> 映像エリアにクリップ</label>
             <button onclick="detectGameArea()" style="background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;">自動検出</button>
@@ -1319,6 +1325,55 @@ function drawOverlay() {
         overlayCtx.clip();
     }
 
+    // Tile obstacle analysis (cached, updated every ~10 frames)
+    if (cfg.grid.enabled && cfg.grid.showLabels && cfg.grid.obstacleDetect !== false) {
+        if (!drawOverlay._tileCache) drawOverlay._tileCache = { frame: 0, data: null };
+        const tc = drawOverlay._tileCache;
+        tc.frame++;
+        if (tc.frame % 10 === 1 || !tc.data) {
+            const video = document.getElementById('videoEl');
+            if (video && video.videoWidth > 0) {
+                const reg = cfg.region;
+                const { rows, cols } = cfg.grid;
+                const ox = cfg.grid.offsetX || 0, oy = cfg.grid.offsetY || 0;
+                const vw = video.videoWidth, vh = video.videoHeight;
+                const cellVW = reg.w * vw / cols, cellVH = reg.h * vh / rows;
+                const baseX = reg.x * vw - ox * cellVW, baseY = reg.y * vh - oy * cellVH;
+                const tmpC = document.createElement('canvas');
+                const sampleSize = 8;
+                tmpC.width = sampleSize; tmpC.height = sampleSize;
+                const tmpCtx = tmpC.getContext('2d', { willReadFrequently: true });
+                const obstacles = [];
+                for (let r = 0; r < rows; r++) {
+                    obstacles[r] = [];
+                    for (let c = 0; c < cols; c++) {
+                        const cx = baseX + c * cellVW + cellVW / 2 - sampleSize / 2;
+                        const cy = baseY + r * cellVH + cellVH / 2 - sampleSize / 2;
+                        tmpCtx.drawImage(video, cx, cy, sampleSize, sampleSize, 0, 0, sampleSize, sampleSize);
+                        const imgData = tmpCtx.getImageData(0, 0, sampleSize, sampleSize).data;
+                        let rr = 0, gg = 0, bb = 0;
+                        const n = sampleSize * sampleSize;
+                        for (let i = 0; i < imgData.length; i += 4) {
+                            rr += imgData[i]; gg += imgData[i+1]; bb += imgData[i+2];
+                        }
+                        rr /= n; gg /= n; bb /= n;
+                        const brightness = rr * 0.299 + gg * 0.587 + bb * 0.114;
+                        // Obstacle: black (out of bounds) or dark tiles (walls, roofs, NPCs)
+                        const obsThresh = cfg.grid.obstacleThreshold || 130;
+                        const isObstacle = brightness < obsThresh;
+                        obstacles[r][c] = isObstacle;
+                    }
+                }
+                tc.data = obstacles;
+            }
+        }
+    }
+
+    // Clear obstacle cache when detection disabled
+    if (cfg.grid.obstacleDetect === false && drawOverlay._tileCache) {
+        drawOverlay._tileCache.data = null;
+    }
+
     // Draw grid
     if (cfg.grid.enabled) {
         const reg = cfg.region;
@@ -1367,7 +1422,15 @@ function drawOverlay() {
                     const xStr = rx2 === 0 ? '0' : (rx2 > 0 ? `→${rx2}` : `←${-rx2}`);
                     const yStr = ry2 === 0 ? '0' : (ry2 > 0 ? `↓${ry2}` : `↑${-ry2}`);
                     const label = `${xStr}/${yStr}`;
-                    overlayCtx.fillStyle = isCenter ? '#ffff00' : labelColor;
+                    const tileObstacles = drawOverlay._tileCache && drawOverlay._tileCache.data;
+                    const isObstacle = tileObstacles && tileObstacles[r] && tileObstacles[r][c];
+                    if (isCenter) {
+                        overlayCtx.fillStyle = '#ffff00';
+                    } else if (isObstacle) {
+                        overlayCtx.fillStyle = 'rgba(255,255,255,0.15)';
+                    } else {
+                        overlayCtx.fillStyle = labelColor;
+                    }
                     overlayCtx.fillText(label, rx + c * cellW + cellW / 2, ry + r * cellH + cellH / 2);
                 }
             }
@@ -1538,6 +1601,8 @@ function applyGridUI() {
     const offY = parseFloat(document.getElementById('gOffY').value);
     const opacity = parseFloat(document.getElementById('gOpacity').value);
     const clipAuto = document.getElementById('gClipAuto').checked;
+    const obstacleEnabled = document.getElementById('gObstacle').checked;
+    const obsThreshold = parseInt(document.getElementById('gObsThreshold').value);
 
     // Update value displays
     document.getElementById('gRegXVal').textContent = regX.toFixed(3);
@@ -1547,11 +1612,13 @@ function applyGridUI() {
     document.getElementById('gOffXVal').textContent = offX.toFixed(2);
     document.getElementById('gOffYVal').textContent = offY.toFixed(2);
     document.getElementById('gOpacityVal').textContent = opacity.toFixed(2);
+    document.getElementById('gObsThresholdVal').textContent = obsThreshold;
 
     overlayConfig.grid = {
         enabled, rows, cols, color, opacity,
         showLabels: true, labelColor: '#ffff00', labelSize: 9,
         offsetX: offX, offsetY: offY,
+        obstacleDetect: obstacleEnabled, obstacleThreshold: obsThreshold,
     };
     overlayConfig.region = { x: regX, y: regY, w: regW, h: regH };
 
