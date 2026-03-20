@@ -1,0 +1,17 @@
+{
+  "screen": "field",
+  "description": "フィールド画面（移動・探索）",
+  "boxes": [
+    {
+      "id": "textbox",
+      "label": "テキスト",
+      "x": 0.1,
+      "y": 0.75,
+      "w": 0.795,
+      "h": 0.205,
+      "color": "#ffffff",
+      "rows": 0,
+      "cols": 0
+    }
+  ]
+}

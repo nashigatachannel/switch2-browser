@@ -1,0 +1,59 @@
+{
+  "name": "ポケットモンスター ファイアーレッド",
+  "name_en": "Pokemon FireRed",
+  "platform": "GBA",
+  "emulation": "Nintendo Switch 2 Online (GBA)",
+  "capture": {
+    "device": "Live Gamer DUO (HDMI1)",
+    "resolution": "1920x1080",
+    "game_area": {
+      "left": 284,
+      "top": 5,
+      "right": 1531,
+      "bottom": 810
+    }
+  },
+  "tiles": {
+    "native_size": 16,
+    "scaled_size": 104,
+    "visible_cols": 15,
+    "visible_rows": 10,
+    "scale": 6.5
+  },
+  "input": {
+    "fps": 30,
+    "min_frames": 2,
+    "min_duration_ms": 66,
+    "repeat_delay_ms": 100,
+    "notes": "ポケモンFR内部30fps、最低2F=66ms入力維持"
+  },
+  "screen_detect": {
+    "method": "pixel_signature",
+    "sample_points": 5,
+    "threshold": 30,
+    "check_interval_ms": 500,
+    "notes": "各画面の特徴点をキャリブレーションで登録。ピクセル色の距離で判定。"
+  },
+  "screens": {
+    "field": {
+      "description": "フィールド画面（移動・探索）",
+      "overlay": "overlay.json",
+      "signature": null
+    },
+    "battle": {
+      "description": "バトル画面",
+      "overlay": null,
+      "signature": null
+    },
+    "menu": {
+      "description": "メニュー画面",
+      "overlay": null,
+      "signature": null
+    },
+    "dialog": {
+      "description": "テキストダイアログ",
+      "overlay": null,
+      "signature": null
+    }
+  }
+}

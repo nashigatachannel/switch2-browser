@@ -1,0 +1,31 @@
+{
+  "game": "ポケットモンスター ファイアーレッド",
+  "platform": "GBA (Switch 2 NSO)",
+  "description": "フィールド画面用オーバーレイ設定",
+  "grid": {
+    "enabled": true,
+    "rows": 9,
+    "cols": 15,
+    "color": "#00ff00",
+    "opacity": 0.5,
+    "showLabels": true,
+    "labelColor": "#ffff00",
+    "labelSize": 9,
+    "offsetX": 0.5,
+    "offsetY": 0.35
+  },
+  "region": {
+    "x": 0.12,
+    "y": 0.042,
+    "w": 0.813,
+    "h": 0.963
+  },
+  "clip": null,
+  "notes": {
+    "tile_size_px": 104,
+    "gba_resolution": "240x160",
+    "gba_tiles": "15x10 (16px tiles)",
+    "player_center_tile": "H4 (0-indexed: col7, row4)",
+    "scale_factor": 6.5
+  }
+}

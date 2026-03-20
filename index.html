@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Switch 2 Browser</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@7/dist/tesseract.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -37,12 +38,23 @@ body {
     width: 100%; height: 100%; object-fit: contain;
     background: #000;
 }
+#overlayCanvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+}
+#overlayCanvas.edit-mode {
+    pointer-events: auto;
+    cursor: default;
+}
 .screen-overlay {
     position: absolute; top: 0; left: 0; right: 0; bottom: 0;
     display: flex; align-items: center; justify-content: center;
     color: #555; font-size: 14px; pointer-events: none;
 }
 .screen-overlay.hidden { display: none; }
+.collapsible-body { overflow: hidden; transition: max-height 0.2s; }
+.collapsible-body.collapsed { max-height: 0 !important; padding: 0 !important; margin: 0 !important; }
+.collapse-btn { background: none; border: none; color: #888; font-size: 14px; cursor: pointer; padding: 0 4px; }
 #deviceSelect {
     background: #1a1a2e; border: 1px solid #3a3a5a; color: #eee;
     border-radius: 6px; padding: 4px 8px; font-size: 11px;
@@ -213,8 +225,11 @@ body {
     <div style="display:flex; align-items:center; gap:12px;">
         <select id="deviceSelect"><option value="">映像デバイスを選択...</option></select>
         <span id="status">Connecting...</span>
+        <span id="fpsDisplay" style="font-size:10px;color:#888;font-family:monospace;"></span>
+        <span id="ocrStatus" style="font-size:10px;color:#555;font-family:monospace;">OCR: -</span>
     </div>
     <div class="top-actions">
+        <button id="muteBtn" onclick="toggleMute()">🔇 音声ON</button>
         <button onclick="toggleFullscreen()">全画面</button>
     </div>
 </div>
@@ -222,11 +237,17 @@ body {
 <!-- Video screen -->
 <div class="screen-wrap" id="screenWrap">
     <video id="videoEl" autoplay playsinline muted></video>
+    <canvas id="overlayCanvas"></canvas>
     <div class="screen-overlay" id="screenOverlay">HDMI入力を選択してください</div>
 </div>
 
 <!-- Controller -->
 <div class="controller">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <span style="font-size:12px;color:#e94560;font-weight:bold;">Controller</span>
+        <button class="collapse-btn" onclick="togglePanel('controllerBody',this)">▼</button>
+    </div>
+    <div id="controllerBody" class="collapsible-body">
     <div class="trigger">
         <div class="btn" data-btn="zl">ZL</div>
         <div class="btn" data-btn="zr">ZR</div>
@@ -273,26 +294,149 @@ body {
         <div class="btn" data-btn="capture">◻</div>
         <div class="btn" data-btn="plus">＋</div>
     </div>
+    </div><!-- /controllerBody -->
 </div>
 
 <!-- Bottom bar -->
 <div class="bottom-bar">
     <span id="gamepadStatus">コントローラー未検出</span>
     <label class="gp-toggle"><input type="checkbox" id="gamepadEnabled" checked> パッド</label>
-    <label class="gp-toggle"><input type="checkbox" id="keyboardEnabled" checked> キーボード</label>
+    <label class="gp-toggle"><input type="checkbox" id="keyboardEnabled"> キーボード</label>
 </div>
 
 <div class="hint">
     Keys: Arrow=D-pad B=B A=A Y=Y X=X L=L R=R M=ZL S=ZR | H=Home Enter=+ Backspace=− | F11=全画面
 </div>
 
+<!-- Screen Overlay Panel -->
+<div class="macro-panel" id="screenPanel">
+    <div class="macro-header">
+        <h2>Screen UI</h2><button class="collapse-btn" onclick="togglePanel('screenBody',this)">▼</button>
+        <div style="display:flex;gap:4px;align-items:center;">
+            <select id="screenSelect" onchange="loadScreen(this.value)" style="background:#2a2a4a;border:1px solid #3a3a5a;color:#eee;border-radius:6px;padding:3px 6px;font-size:11px;">
+                <option value="">画面を選択...</option>
+            </select>
+            <button onclick="clearScreen()" style="background:#3a3a5a;border:1px solid #4a4a6a;color:#ddd;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;">クリア</button>
+            <button onclick="saveCurrentScreen()" style="background:#0a7;border:1px solid #0c9;color:#fff;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;">保存</button>
+            <button onclick="registerCurrentScreenSignature()" id="registerSigBtn" style="background:#07a;border:1px solid #09c;color:#fff;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;" title="現在のピクセルをこの画面のsignatureとして登録">この画面を登録</button>
+            <label class="gp-toggle" style="font-size:10px;" title="画面signatureによる自動ロード">
+                <input type="checkbox" id="autoDetectEnabled" onchange="onAutoDetectToggle()"> 自動判別
+            </label>
+        </div>
+    </div>
+    <div id="screenBody" class="collapsible-body">
+    <div id="boxList" style="font-size:11px;color:#aaa;"></div>
+    <div id="boxEditor" style="display:none;margin-top:8px;font-size:11px;color:#aaa;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+            <label>ID <input type="text" id="boxId" style="width:80px;" placeholder="box_id"></label>
+            <label>ラベル <input type="text" id="boxLabel" style="width:80px;" placeholder="名前"></label>
+            <label>色 <input type="color" id="boxColor" value="#ff4444"></label>
+            <label>Rows <input type="number" id="boxRows" value="0" min="0" max="20" style="width:40px;"></label>
+            <label>Cols <input type="number" id="boxCols" value="0" min="0" max="20" style="width:40px;"></label>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:20px;">X</span><input type="range" id="boxX" min="0" max="1" step="0.005" value="0" style="flex:1;" oninput="previewBox()"><span id="boxXVal" style="width:35px;">0</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:20px;">Y</span><input type="range" id="boxY" min="0" max="1" step="0.005" value="0" style="flex:1;" oninput="previewBox()"><span id="boxYVal" style="width:35px;">0</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:20px;">W</span><input type="range" id="boxW" min="0.01" max="1" step="0.005" value="0.2" style="flex:1;" oninput="previewBox()"><span id="boxWVal" style="width:35px;">0.2</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:20px;">H</span><input type="range" id="boxH" min="0.01" max="1" step="0.005" value="0.1" style="flex:1;" oninput="previewBox()"><span id="boxHVal" style="width:35px;">0.1</span>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+            <button onclick="applyBox()" style="background:#e94560;border:none;color:#fff;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;">適用</button>
+            <button onclick="cancelBoxEdit()" style="background:#3a3a5a;border:1px solid #4a4a6a;color:#ddd;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;">キャンセル</button>
+            <button onclick="deleteBox()" style="background:#a00;border:none;color:#fff;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">削除</button>
+        </div>
+    </div>
+    <button onclick="addNewBox()" style="background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;margin-top:6px;">+ ボックス追加</button>
+    </div><!-- /screenBody -->
+</div>
+
+<!-- Screen State & Log Panel -->
+<div class="macro-panel" id="statePanel">
+    <div class="macro-header">
+        <h2>State</h2><button class="collapse-btn" onclick="togglePanel('stateBody',this)">▼</button>
+    </div>
+    <div id="stateBody" class="collapsible-body">
+        <div id="stateDisplay" style="font-size:11px;color:#ccc;font-family:monospace;"></div>
+        <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:11px;color:#888;">Log</span>
+            <button onclick="clearLog()" style="background:#3a3a5a;border:1px solid #4a4a6a;color:#ddd;border-radius:6px;padding:2px 6px;font-size:9px;cursor:pointer;">クリア</button>
+        </div>
+        <div id="logDisplay" style="font-size:10px;color:#aaa;font-family:monospace;max-height:150px;overflow-y:auto;margin-top:4px;"></div>
+    </div>
+</div>
+
+<!-- Grid Control Panel -->
+<div class="macro-panel" id="gridPanel">
+    <div class="macro-header">
+        <h2>Grid Overlay</h2><button class="collapse-btn" onclick="togglePanel('gridBody',this)">▼</button>
+        <label class="gp-toggle"><input type="checkbox" id="gridEnabled" onchange="applyGridUI()"> ON</label>
+    </div>
+    <div id="gridBody" class="collapsible-body">
+    <div id="gridControls" style="display:flex;flex-direction:column;gap:6px;font-size:11px;color:#aaa;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <label style="flex:1;min-width:80px;">Cols <input type="number" id="gCols" value="15" min="1" max="40" style="width:50px;" onchange="applyGridUI()"></label>
+            <label style="flex:1;min-width:80px;">Rows <input type="number" id="gRows" value="9" min="1" max="30" style="width:50px;" onchange="applyGridUI()"></label>
+            <label style="flex:1;min-width:80px;">色 <input type="color" id="gColor" value="#00ff00" onchange="applyGridUI()"></label>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Region X</span>
+            <input type="range" id="gRegX" min="0" max="0.5" step="0.001" value="0.088" style="flex:1;" oninput="applyGridUI()">
+            <span id="gRegXVal" style="width:40px;text-align:right;">0.088</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Region Y</span>
+            <input type="range" id="gRegY" min="0" max="0.5" step="0.001" value="0.019" style="flex:1;" oninput="applyGridUI()">
+            <span id="gRegYVal" style="width:40px;text-align:right;">0.019</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Region W</span>
+            <input type="range" id="gRegW" min="0.1" max="1" step="0.001" value="0.813" style="flex:1;" oninput="applyGridUI()">
+            <span id="gRegWVal" style="width:40px;text-align:right;">0.813</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Region H</span>
+            <input type="range" id="gRegH" min="0.1" max="1" step="0.001" value="0.963" style="flex:1;" oninput="applyGridUI()">
+            <span id="gRegHVal" style="width:40px;text-align:right;">0.963</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Offset X</span>
+            <input type="range" id="gOffX" min="0" max="1" step="0.01" value="0.5" style="flex:1;" oninput="applyGridUI()">
+            <span id="gOffXVal" style="width:40px;text-align:right;">0.50</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Offset Y</span>
+            <input type="range" id="gOffY" min="0" max="1" step="0.01" value="0.35" style="flex:1;" oninput="applyGridUI()">
+            <span id="gOffYVal" style="width:40px;text-align:right;">0.35</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:60px;">Opacity</span>
+            <input type="range" id="gOpacity" min="0.1" max="1" step="0.05" value="0.5" style="flex:1;" oninput="applyGridUI()">
+            <span id="gOpacityVal" style="width:40px;text-align:right;">0.50</span>
+        </div>
+        <div style="display:flex;gap:8px;">
+            <label class="gp-toggle"><input type="checkbox" id="gClipAuto" checked onchange="applyGridUI()"> 映像エリアにクリップ</label>
+            <button onclick="detectGameArea()" style="background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;">自動検出</button>
+            <button onclick="pushGridToServer()" style="background:#0a7;border:1px solid #0c9;color:#fff;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;">サーバーに保存</button>
+        </div>
+    </div>
+    </div><!-- /gridBody -->
+</div>
+
 <!-- Macro Panel -->
 <div class="macro-panel" id="macroPanel">
     <div class="macro-header">
-        <h2>Macros</h2>
+        <h2>Macros</h2><button class="collapse-btn" onclick="togglePanel('macroBody',this)">▼</button>
         <button class="macro-add-btn" onclick="openMacroEditor()">+ 新規</button>
     </div>
+    <div id="macroBody" class="collapsible-body">
     <div id="macroList"></div>
+    </div><!-- /macroBody -->
 </div>
 
 <!-- Macro Editor Modal -->
@@ -325,6 +469,15 @@ body {
 
 <script>
 // ===========================
+// Panel collapse toggle
+// ===========================
+function togglePanel(id, btn) {
+    const el = document.getElementById(id);
+    el.classList.toggle('collapsed');
+    btn.textContent = el.classList.contains('collapsed') ? '▶' : '▼';
+}
+
+// ===========================
 // Video Capture (getUserMedia)
 // ===========================
 const videoEl = document.getElementById('videoEl');
@@ -347,8 +500,8 @@ async function enumerateVideoDevices() {
         const opt = document.createElement('option');
         opt.value = d.deviceId;
         opt.textContent = d.label || `Camera ${d.deviceId.slice(0,8)}`;
-        // Auto-select Live Gamer DUO
-        if (d.label.includes('Live Gamer DUO')) {
+        // Auto-select Live Gamer DUO - 1
+        if (d.label && d.label.includes('Live Gamer DUO') && d.label.includes('1')) {
             opt.selected = true;
         }
         deviceSelect.appendChild(opt);
@@ -389,6 +542,11 @@ async function startCapture(deviceId) {
 
 deviceSelect.addEventListener('change', () => startCapture(deviceSelect.value));
 
+function toggleMute() {
+    videoEl.muted = !videoEl.muted;
+    document.getElementById('muteBtn').textContent = videoEl.muted ? '🔇 音声ON' : '🔊 音声OFF';
+}
+
 function toggleFullscreen() {
     if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen();
@@ -426,39 +584,170 @@ const KEY_MAP = {
 // ===========================
 let state = { btn0:0, btn1:0, hat:8, lx:128, ly:128, rx:128, ry:128 };
 let pressed = new Set();
-let ws = null;
 let sendInterval = null;
 
 // ===========================
-// WebSocket
+// Web Worker with WebSocket inside (immune to Chrome Intensive Throttling)
+// Chrome throttles Worker→Main postMessage in background tabs,
+// so we put the WebSocket INSIDE the Worker to bypass all throttling.
+// ===========================
+const workerBlob = new Blob([`
+    let ws = null;
+    let tid = null;
+    let state = { cmd:'report', btn0:0, btn1:0, hat:8, lx:128, ly:128, rx:128, ry:128 };
+    let wsUrl = '';
+
+    function doConnect() {
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            self.postMessage({ type:'status', connected:true });
+            if (!tid) {
+                tid = setInterval(() => {
+                    if (ws && ws.readyState === 1) {
+                        ws.send(JSON.stringify(state));
+                    }
+                }, 16);
+            }
+        };
+        ws.onmessage = (e) => {
+            self.postMessage({ type:'ws_msg', data: e.data });
+        };
+        ws.onclose = () => {
+            self.postMessage({ type:'status', connected:false });
+            setTimeout(doConnect, 1000);
+        };
+    }
+
+    self.onmessage = (e) => {
+        if (e.data.type === 'connect') {
+            wsUrl = e.data.url;
+            doConnect();
+        } else if (e.data.type === 'state') {
+            Object.assign(state, e.data.state);
+        }
+    };
+`], { type: 'application/javascript' });
+const comWorker = new Worker(URL.createObjectURL(workerBlob));
+comWorker.onmessage = (e) => {
+    if (e.data.type === 'status') {
+        const el = document.getElementById('status');
+        if (e.data.connected) {
+            el.textContent = 'Connected'; el.className = 'connected';
+        } else {
+            el.textContent = 'Disconnected'; el.className = '';
+        }
+    }
+};
+
+// Push state to worker whenever it changes
+function pushState() {
+    comWorker.postMessage({ type:'state', state: { cmd:'report', ...state } });
+}
+
+// ===========================
+// WebSocket (via Worker)
 // ===========================
 function connect() {
-    ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onopen = () => {
-        document.getElementById('status').textContent = 'Connected';
-        document.getElementById('status').className = 'connected';
-        startSending();
-    };
-    ws.onclose = () => {
-        document.getElementById('status').textContent = 'Disconnected';
-        document.getElementById('status').className = '';
-        stopSending();
-        setTimeout(connect, 1000);
-    };
+    comWorker.postMessage({ type:'connect', url: `ws://${location.host}/ws` });
 }
 
-function startSending() {
-    if (sendInterval) return;
-    sendInterval = setInterval(() => {
-        pollGamepad();
-        if (ws && ws.readyState === 1) {
-            ws.send(JSON.stringify({ cmd:'report', ...state }));
+// ===========================
+// FPS Measurement
+// ===========================
+let fpsFrames = 0;
+let fpsLastTime = performance.now();
+let hdmiFps = 0;
+let captureFps = 0;
+let inputLatencyFrames = 0;
+
+// Measure HDMI input FPS via requestVideoFrameCallback
+function measureVideoFps() {
+    const video = document.getElementById('videoEl');
+    if (!video.requestVideoFrameCallback) {
+        // Fallback: count video.currentTime changes
+        let lastTime = video.currentTime;
+        let frames = 0;
+        let start = performance.now();
+        setInterval(() => {
+            if (video.currentTime !== lastTime) {
+                frames++;
+                lastTime = video.currentTime;
+            }
+            const elapsed = performance.now() - start;
+            if (elapsed >= 1000) {
+                hdmiFps = frames;
+                frames = 0;
+                start = performance.now();
+            }
+        }, 8);
+        return;
+    }
+    let vfCount = 0;
+    let vfStart = performance.now();
+    function onFrame(now) {
+        vfCount++;
+        const elapsed = now - vfStart;
+        if (elapsed >= 1000) {
+            hdmiFps = Math.round(vfCount * 1000 / elapsed);
+            vfCount = 0;
+            vfStart = now;
         }
+        video.requestVideoFrameCallback(onFrame);
+    }
+    video.requestVideoFrameCallback(onFrame);
+}
+
+// Measure capture FPS (getUserMedia actual frame delivery)
+function measureCaptureFps() {
+    const video = document.getElementById('videoEl');
+    const c = document.createElement('canvas');
+    c.width = 2; c.height = 2;
+    const ctx = c.getContext('2d');
+    let lastPixel = '';
+    let cFrames = 0;
+    let cStart = performance.now();
+    setInterval(() => {
+        ctx.drawImage(video, 0, 0, 2, 2);
+        const px = ctx.getImageData(0, 0, 1, 1).data.toString();
+        if (px !== lastPixel) {
+            cFrames++;
+            lastPixel = px;
+        }
+        const elapsed = performance.now() - cStart;
+        if (elapsed >= 1000) {
+            captureFps = cFrames;
+            cFrames = 0;
+            cStart = performance.now();
+        }
+    }, 8);
+}
+
+// Update FPS display
+setInterval(() => {
+    const el = document.getElementById('fpsDisplay');
+    if (el) {
+        const latencyMs = hdmiFps > 0 ? Math.round(1000 / hdmiFps * inputLatencyFrames) : '?';
+        el.textContent = `HDMI:${hdmiFps}fps | Cap:${captureFps}fps | Lag:${inputLatencyFrames}F(${latencyMs}ms)`;
+    }
+}, 500);
+
+// Start FPS measurement when video starts
+document.getElementById('videoEl').addEventListener('playing', () => {
+    measureVideoFps();
+    measureCaptureFps();
+}, { once: true });
+
+// Gamepad polling — runs on main thread via requestAnimationFrame + setInterval fallback
+let gpInterval = null;
+function startGamepadPolling() {
+    if (gpInterval) return;
+    gpInterval = setInterval(() => {
+        pollGamepad();
+        pushState();
     }, 16);
 }
-
-function stopSending() {
-    if (sendInterval) { clearInterval(sendInterval); sendInterval = null; }
+function stopGamepadPolling() {
+    if (gpInterval) { clearInterval(gpInterval); gpInterval = null; }
 }
 
 // ===========================
@@ -485,6 +774,7 @@ function updateState() {
     else hat = HAT_MAP.neutral;
 
     state.btn0 = btn0; state.btn1 = btn1; state.hat = hat;
+    pushState();
 
     document.querySelectorAll('.btn[data-btn]').forEach(el => {
         el.classList.toggle('active', pressed.has(el.dataset.btn));
@@ -542,6 +832,7 @@ function setupStick(areaId, dotId, xKey, yKey) {
         state[yKey] = Math.round(128 + dy * 127);
         dot.style.transform = `translate(${-50 + dx*35}%, ${-50 + dy*35}%)`;
         area.classList.add('active');
+        pushState();
     }
 
     function reset() {
@@ -549,6 +840,7 @@ function setupStick(areaId, dotId, xKey, yKey) {
         state[xKey] = 128; state[yKey] = 128;
         dot.style.transform = 'translate(-50%, -50%)';
         area.classList.remove('active');
+        pushState();
     }
 
     area.addEventListener('mousedown', (e) => { dragging = true; update(e.clientX, e.clientY); });
@@ -944,10 +1236,1133 @@ async function deleteMacro() {
 }
 
 // ===========================
+// Anti-throttle: plays near-silent audio so Chrome won't throttle this tab
+// Chrome skips Intensive Throttling for tabs with active audio
+// ===========================
+let antiThrottleStarted = false;
+function startAntiThrottle() {
+    if (antiThrottleStarted) return;
+    antiThrottleStarted = true;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Create a buffer with near-silent noise (not pure silence — Chrome detects that)
+    const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() - 0.5) * 0.002;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.01;
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    src.start();
+    console.log('Anti-throttle audio started');
+}
+// Must start on user gesture for Chrome autoplay policy
+document.addEventListener('click', startAntiThrottle, { once: false });
+document.addEventListener('keydown', startAntiThrottle, { once: false });
+
+// ===========================
+// Overlay System (Grid + Boxes)
+// ===========================
+const overlayCanvas = document.getElementById('overlayCanvas');
+const overlayCtx = overlayCanvas.getContext('2d');
+
+let boxEditMode = false;
+let editingBoxIdx = -1;
+const HANDLE_SIZE = 8;
+
+let overlayConfig = {
+    grid: { enabled: false, rows: 10, cols: 16, color: '#00ff00', opacity: 0.4, showLabels: true, labelColor: '#00ff00', labelSize: 10 },
+    boxes: [],  // { id, x, y, w, h, color, label, opacity }  — x/y/w/h are 0-1 normalized
+    region: { x: 0, y: 0, w: 1, h: 1 },  // grid applies to this sub-region (0-1 normalized)
+    clip: null,  // { x, y, w, h } — clip grid/box drawing to this area (0-1 normalized)
+};
+
+function resizeOverlay() {
+    const wrap = document.getElementById('screenWrap');
+    const rect = wrap.getBoundingClientRect();
+    overlayCanvas.width = rect.width * devicePixelRatio;
+    overlayCanvas.height = rect.height * devicePixelRatio;
+    overlayCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+function drawOverlay() {
+    const w = overlayCanvas.width / devicePixelRatio;
+    const h = overlayCanvas.height / devicePixelRatio;
+    overlayCtx.clearRect(0, 0, w, h);
+
+    const cfg = overlayConfig;
+
+    // Apply clip region if set
+    if (cfg.clip) {
+        overlayCtx.save();
+        overlayCtx.beginPath();
+        overlayCtx.rect(cfg.clip.x * w, cfg.clip.y * h, cfg.clip.w * w, cfg.clip.h * h);
+        overlayCtx.clip();
+    }
+
+    // Draw grid
+    if (cfg.grid.enabled) {
+        const reg = cfg.region;
+        const { rows, cols, color, opacity, showLabels, labelColor, labelSize } = cfg.grid;
+        // offsetX/offsetY: 0-1 in cell units (0.5 = shift half a cell)
+        const ox = cfg.grid.offsetX || 0, oy = cfg.grid.offsetY || 0;
+        const rw = reg.w * w, rh = reg.h * h;
+        const cellW = rw / cols, cellH = rh / rows;
+        const rx = reg.x * w - ox * cellW, ry = reg.y * h - oy * cellH;
+
+        overlayCtx.save();
+        overlayCtx.globalAlpha = opacity;
+        overlayCtx.strokeStyle = color;
+        overlayCtx.lineWidth = 1;
+
+        // Vertical lines
+        for (let c = 0; c <= cols; c++) {
+            const x = rx + c * cellW;
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(x, ry);
+            overlayCtx.lineTo(x, ry + rh);
+            overlayCtx.stroke();
+        }
+        // Horizontal lines
+        for (let r = 0; r <= rows; r++) {
+            const y = ry + r * cellH;
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(rx, y);
+            overlayCtx.lineTo(rx + rw, y);
+            overlayCtx.stroke();
+        }
+
+        // Labels
+        if (showLabels && cellW > 14 && cellH > 14) {
+            overlayCtx.globalAlpha = Math.min(1, opacity + 0.3);
+            overlayCtx.fillStyle = labelColor;
+            overlayCtx.font = `bold ${labelSize}px monospace`;
+            overlayCtx.textAlign = 'center';
+            overlayCtx.textBaseline = 'middle';
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const colLabel = String.fromCharCode(65 + (c % 26));
+                    const label = `${colLabel}${r}`;
+                    overlayCtx.fillText(label, rx + c * cellW + cellW / 2, ry + r * cellH + cellH / 2);
+                }
+            }
+        }
+        overlayCtx.restore();
+    }
+
+    // Draw boxes
+    for (const box of cfg.boxes) {
+        overlayCtx.save();
+        const alpha = box.opacity ?? 0.5;
+        overlayCtx.globalAlpha = alpha;
+        overlayCtx.strokeStyle = box.color || '#ff0000';
+        overlayCtx.lineWidth = 2;
+        const bx = box.x * w, by = box.y * h, bw = box.w * w, bh = box.h * h;
+        overlayCtx.strokeRect(bx, by, bw, bh);
+
+        // Box label (top-left, outside)
+        if (box.label) {
+            overlayCtx.globalAlpha = Math.min(1, alpha + 0.3);
+            overlayCtx.fillStyle = box.color || '#ff0000';
+            overlayCtx.font = 'bold 12px monospace';
+            overlayCtx.textAlign = 'left';
+            overlayCtx.textBaseline = 'bottom';
+            overlayCtx.fillText(box.label, bx + 2, by - 2);
+        }
+
+        // Box inner grid (rows/cols subdivision)
+        const bRows = box.rows || 0, bCols = box.cols || 0;
+        if (bRows > 1 || bCols > 1) {
+            overlayCtx.globalAlpha = alpha * 0.7;
+            overlayCtx.lineWidth = 1;
+            overlayCtx.setLineDash([4, 3]);
+            const cellW = bw / (bCols || 1), cellH = bh / (bRows || 1);
+
+            if (bCols > 1) {
+                for (let c = 1; c < bCols; c++) {
+                    const x = bx + c * cellW;
+                    overlayCtx.beginPath();
+                    overlayCtx.moveTo(x, by);
+                    overlayCtx.lineTo(x, by + bh);
+                    overlayCtx.stroke();
+                }
+            }
+            if (bRows > 1) {
+                for (let r = 1; r < bRows; r++) {
+                    const y = by + r * cellH;
+                    overlayCtx.beginPath();
+                    overlayCtx.moveTo(bx, y);
+                    overlayCtx.lineTo(bx + bw, y);
+                    overlayCtx.stroke();
+                }
+            }
+            overlayCtx.setLineDash([]);
+
+            // Cell labels
+            const effRows = bRows || 1, effCols = bCols || 1;
+            const cellTexts = box.cellLabels || [];  // ["たたかう","バッグ","ポケモン","にげる"]
+            const showBoxLabels = box.showLabels !== false;
+
+            if (cellW > 12 && cellH > 12) {
+                for (let r = 0; r < effRows; r++) {
+                    for (let c = 0; c < effCols; c++) {
+                        const idx = r * effCols + c;
+                        const txt = cellTexts[idx];
+                        const cx = bx + c * cellW + cellW / 2;
+                        const cy = by + r * cellH + cellH / 2;
+
+                        if (txt) {
+                            // User-defined cell text (main, centered)
+                            overlayCtx.globalAlpha = Math.min(1, alpha + 0.4);
+                            overlayCtx.fillStyle = '#ffffff';
+                            const txtSize = Math.min(14, Math.floor(Math.min(cellW, cellH) * 0.4));
+                            overlayCtx.font = `bold ${txtSize}px sans-serif`;
+                            overlayCtx.textAlign = 'center';
+                            overlayCtx.textBaseline = 'middle';
+                            // Background pill for readability
+                            const tm = overlayCtx.measureText(txt);
+                            const pad = 3;
+                            overlayCtx.globalAlpha = alpha * 0.6;
+                            overlayCtx.fillStyle = '#000000';
+                            overlayCtx.fillRect(cx - tm.width / 2 - pad, cy - txtSize / 2 - pad, tm.width + pad * 2, txtSize + pad * 2);
+                            overlayCtx.globalAlpha = Math.min(1, alpha + 0.4);
+                            overlayCtx.fillStyle = '#ffffff';
+                            overlayCtx.fillText(txt, cx, cy);
+
+                            // Coordinate label (small, top-left corner of cell)
+                            if (showBoxLabels) {
+                                overlayCtx.globalAlpha = alpha * 0.6;
+                                overlayCtx.fillStyle = box.color || '#ff0000';
+                                overlayCtx.font = `bold 8px monospace`;
+                                overlayCtx.textAlign = 'left';
+                                overlayCtx.textBaseline = 'top';
+                                let coordLabel;
+                                if (effCols === 1) coordLabel = `${r}`;
+                                else if (effRows === 1) coordLabel = String.fromCharCode(65 + (c % 26));
+                                else coordLabel = `${String.fromCharCode(65 + (c % 26))}${r}`;
+                                overlayCtx.fillText(coordLabel, bx + c * cellW + 2, by + r * cellH + 2);
+                            }
+                        } else if (showBoxLabels) {
+                            // No text — show coordinate label centered
+                            overlayCtx.globalAlpha = Math.min(1, alpha + 0.2);
+                            overlayCtx.fillStyle = box.color || '#ff0000';
+                            const fontSize = Math.min(11, Math.floor(Math.min(cellW, cellH) * 0.45));
+                            overlayCtx.font = `bold ${fontSize}px monospace`;
+                            overlayCtx.textAlign = 'center';
+                            overlayCtx.textBaseline = 'middle';
+                            let cellLabel;
+                            if (effCols === 1) cellLabel = `${r}`;
+                            else if (effRows === 1) cellLabel = String.fromCharCode(65 + (c % 26));
+                            else cellLabel = `${String.fromCharCode(65 + (c % 26))}${r}`;
+                            overlayCtx.fillText(cellLabel, cx, cy);
+                        }
+                    }
+                }
+            }
+        }
+        overlayCtx.restore();
+    }
+
+    // Restore clip
+    if (cfg.clip) overlayCtx.restore();
+
+    // Draw edit handles when in edit mode
+    if (boxEditMode && cfg.boxes) {
+        for (let i = 0; i < cfg.boxes.length; i++) {
+            const box = cfg.boxes[i];
+            const bx = box.x * w, by = box.y * h, bw = box.w * w, bh = box.h * h;
+            const hs = HANDLE_SIZE || 6;
+            overlayCtx.save();
+            // Highlight selected box
+            if (i === editingBoxIdx) {
+                overlayCtx.strokeStyle = '#fff';
+                overlayCtx.lineWidth = 2;
+                overlayCtx.setLineDash([4, 4]);
+                overlayCtx.strokeRect(bx, by, bw, bh);
+                overlayCtx.setLineDash([]);
+            }
+            // Resize handle (bottom-right)
+            overlayCtx.fillStyle = i === editingBoxIdx ? '#fff' : (box.color || '#ff0000');
+            overlayCtx.globalAlpha = 0.9;
+            overlayCtx.fillRect(bx + bw - hs, by + bh - hs, hs * 2, hs * 2);
+            overlayCtx.restore();
+        }
+    }
+
+    requestAnimationFrame(drawOverlay);
+}
+
+new ResizeObserver(resizeOverlay).observe(document.getElementById('screenWrap'));
+resizeOverlay();
+drawOverlay();
+
+// === Grid UI Control ===
+let gridUIActive = false;  // When true, local UI controls override server polling
+
+function applyGridUI() {
+    gridUIActive = true;
+    const enabled = document.getElementById('gridEnabled').checked;
+    const cols = parseInt(document.getElementById('gCols').value) || 15;
+    const rows = parseInt(document.getElementById('gRows').value) || 10;
+    const color = document.getElementById('gColor').value;
+    const regX = parseFloat(document.getElementById('gRegX').value);
+    const regY = parseFloat(document.getElementById('gRegY').value);
+    const regW = parseFloat(document.getElementById('gRegW').value);
+    const regH = parseFloat(document.getElementById('gRegH').value);
+    const offX = parseFloat(document.getElementById('gOffX').value);
+    const offY = parseFloat(document.getElementById('gOffY').value);
+    const opacity = parseFloat(document.getElementById('gOpacity').value);
+    const clipAuto = document.getElementById('gClipAuto').checked;
+
+    // Update value displays
+    document.getElementById('gRegXVal').textContent = regX.toFixed(3);
+    document.getElementById('gRegYVal').textContent = regY.toFixed(3);
+    document.getElementById('gRegWVal').textContent = regW.toFixed(3);
+    document.getElementById('gRegHVal').textContent = regH.toFixed(3);
+    document.getElementById('gOffXVal').textContent = offX.toFixed(2);
+    document.getElementById('gOffYVal').textContent = offY.toFixed(2);
+    document.getElementById('gOpacityVal').textContent = opacity.toFixed(2);
+
+    overlayConfig.grid = {
+        enabled, rows, cols, color, opacity,
+        showLabels: true, labelColor: '#ffff00', labelSize: 9,
+        offsetX: offX, offsetY: offY,
+    };
+    overlayConfig.region = { x: regX, y: regY, w: regW, h: regH };
+
+    if (clipAuto && overlayConfig._detectedClip) {
+        overlayConfig.clip = overlayConfig._detectedClip;
+    } else if (!clipAuto) {
+        overlayConfig.clip = null;
+    }
+}
+
+async function detectGameArea() {
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth) { alert('映像なし'); return; }
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth; c.height = video.videoHeight;
+    const ctx = c.getContext('2d', {willReadFrequently: true});
+    ctx.drawImage(video, 0, 0, c.width, c.height);
+    const thr = 15;
+    const vw = c.width, vh = c.height;
+
+    function scanLeft(y) {
+        const row = ctx.getImageData(0, y, vw, 1).data;
+        for (let x = 0; x < vw; x++) { const i = x*4; if (row[i]+row[i+1]+row[i+2] > thr) return x; }
+        return vw;
+    }
+    function scanRight(y) {
+        const row = ctx.getImageData(0, y, vw, 1).data;
+        for (let x = vw-1; x >= 0; x--) { const i = x*4; if (row[i]+row[i+1]+row[i+2] > thr) return x; }
+        return 0;
+    }
+    function scanTop(x) {
+        const col = ctx.getImageData(x, 0, 1, vh).data;
+        for (let y = 0; y < vh; y++) { const i = y*4; if (col[i]+col[i+1]+col[i+2] > thr) return y; }
+        return vh;
+    }
+    function scanBottom(x) {
+        const col = ctx.getImageData(x, 0, 1, vh).data;
+        for (let y = vh-1; y >= 0; y--) { const i = y*4; if (col[i]+col[i+1]+col[i+2] > thr) return y; }
+        return 0;
+    }
+
+    const median = arr => { arr.sort((a,b)=>a-b); return arr[Math.floor(arr.length/2)]; };
+    const ys = Array.from({length:9}, (_,i) => Math.round(vh*0.1 + vh*0.08*i));
+    const xs = Array.from({length:9}, (_,i) => Math.round(vw*0.25 + vw*0.06*i));
+
+    const left = median(ys.map(scanLeft));
+    const right = median(ys.map(scanRight));
+    const top = median(xs.map(scanTop));
+    const bottom = median(xs.map(scanBottom));
+
+    const clip = {
+        x: left/vw, y: top/vh,
+        w: (right-left)/vw, h: (bottom-top)/vh,
+    };
+    overlayConfig._detectedClip = clip;
+    if (document.getElementById('gClipAuto').checked) {
+        overlayConfig.clip = clip;
+    }
+    console.log('Detected game area:', {left, right, top, bottom, clip});
+    console.log(`検出: left=${left} right=${right} top=${top} bottom=${bottom}`);
+}
+
+async function pushGridToServer() {
+    const cfg = { grid: overlayConfig.grid, region: overlayConfig.region, boxes: overlayConfig.boxes, clip: overlayConfig.clip };
+    // Save to server memory
+    await fetch('/api/overlay', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(cfg),
+    });
+    // Also save to game's overlay.json file
+    await fetch('/api/overlay/save', { method: 'POST' });
+    console.log('Grid saved to server + file');
+}
+
+// === Screen UI Control ===
+
+async function loadScreenList() {
+    try {
+        const r = await fetch('/api/screens');
+        const data = await r.json();
+        const sel = document.getElementById('screenSelect');
+        sel.innerHTML = '<option value="">画面を選択...</option>';
+        for (const s of data.screens) {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.description;
+            if (s.id === data.active) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    } catch(e) {}
+}
+
+async function loadScreen(screenId) {
+    if (!screenId) return;
+    await fetch(`/api/screens/load/${screenId}`, {method:'POST'});
+    gridUIActive = false;  // Allow polling to update boxes
+    setTimeout(renderBoxList, 600);
+}
+
+async function clearScreen() {
+    await fetch('/api/screens/clear', {method:'POST'});
+    document.getElementById('screenSelect').value = '';
+    gridUIActive = false;
+    renderBoxList();
+}
+
+async function saveCurrentScreen() {
+    const screenId = document.getElementById('screenSelect').value;
+    if (!screenId) { alert('画面を選択してください'); return; }
+    await fetch(`/api/screens/save/${screenId}`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({boxes: overlayConfig.boxes}),
+    });
+    console.log(`${screenId} に保存しました`);
+}
+
+function renderBoxList() {
+    const el = document.getElementById('boxList');
+    const boxes = overlayConfig.boxes || [];
+    if (!boxes.length) {
+        el.innerHTML = '<div style="color:#555;padding:4px;">ボックスなし</div>';
+        return;
+    }
+    el.innerHTML = boxes.map((b, i) => `
+        <div class="macro-item" style="margin-bottom:3px;">
+            <div class="info">
+                <div class="name" style="font-size:11px;">${b.label || b.id}</div>
+                <div class="desc" style="font-size:9px;color:#666;">${b.id} | x:${(b.x||0).toFixed(2)} y:${(b.y||0).toFixed(2)} w:${(b.w||0).toFixed(2)} h:${(b.h||0).toFixed(2)}${b.rows?' r:'+b.rows:''}${b.cols?' c:'+b.cols:''}</div>
+            </div>
+            <div class="actions">
+                <button onclick="editBox(${i})" style="background:#3a3a5a;border:1px solid #4a4a6a;color:#ddd;border-radius:6px;padding:2px 6px;font-size:9px;cursor:pointer;">編集</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function editBox(idx) {
+    editingBoxIdx = idx;
+    const box = overlayConfig.boxes[idx];
+    document.getElementById('boxId').value = box.id || '';
+    document.getElementById('boxLabel').value = box.label || '';
+    document.getElementById('boxColor').value = box.color || '#ff4444';
+    document.getElementById('boxRows').value = box.rows || 0;
+    document.getElementById('boxCols').value = box.cols || 0;
+    document.getElementById('boxX').value = box.x || 0;
+    document.getElementById('boxY').value = box.y || 0;
+    document.getElementById('boxW').value = box.w || 0.2;
+    document.getElementById('boxH').value = box.h || 0.1;
+    previewBox();
+    document.getElementById('boxEditor').style.display = 'block';
+    enableBoxEditMode(true);
+}
+
+function addNewBox() {
+    overlayConfig.boxes = overlayConfig.boxes || [];
+    overlayConfig.boxes.push({id:'new_box', label:'新規', x:0.3, y:0.3, w:0.2, h:0.1, color:'#ff4444'});
+    gridUIActive = true;
+    renderBoxList();
+    editBox(overlayConfig.boxes.length - 1);
+}
+
+function previewBox() {
+    if (editingBoxIdx < 0) return;
+    const x = parseFloat(document.getElementById('boxX').value);
+    const y = parseFloat(document.getElementById('boxY').value);
+    const w = parseFloat(document.getElementById('boxW').value);
+    const h = parseFloat(document.getElementById('boxH').value);
+    document.getElementById('boxXVal').textContent = x.toFixed(3);
+    document.getElementById('boxYVal').textContent = y.toFixed(3);
+    document.getElementById('boxWVal').textContent = w.toFixed(3);
+    document.getElementById('boxHVal').textContent = h.toFixed(3);
+    const box = overlayConfig.boxes[editingBoxIdx];
+    box.x = x; box.y = y; box.w = w; box.h = h;
+    gridUIActive = true;
+}
+
+function applyBox() {
+    if (editingBoxIdx < 0) return;
+    const box = overlayConfig.boxes[editingBoxIdx];
+    box.id = document.getElementById('boxId').value;
+    box.label = document.getElementById('boxLabel').value;
+    box.color = document.getElementById('boxColor').value;
+    box.rows = parseInt(document.getElementById('boxRows').value) || 0;
+    box.cols = parseInt(document.getElementById('boxCols').value) || 0;
+    box.x = parseFloat(document.getElementById('boxX').value);
+    box.y = parseFloat(document.getElementById('boxY').value);
+    box.w = parseFloat(document.getElementById('boxW').value);
+    box.h = parseFloat(document.getElementById('boxH').value);
+    // Push to server
+    fetch('/api/overlay/box', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(box),
+    });
+    document.getElementById('boxEditor').style.display = 'none';
+    editingBoxIdx = -1;
+    enableBoxEditMode(false);
+    renderBoxList();
+}
+
+function cancelBoxEdit() {
+    document.getElementById('boxEditor').style.display = 'none';
+    editingBoxIdx = -1;
+    enableBoxEditMode(false);
+}
+
+function deleteBox() {
+    if (editingBoxIdx < 0) return;
+    const box = overlayConfig.boxes[editingBoxIdx];
+    overlayConfig.boxes.splice(editingBoxIdx, 1);
+    if (box.id) fetch(`/api/overlay/box/${box.id}`, {method:'DELETE'});
+    document.getElementById('boxEditor').style.display = 'none';
+    editingBoxIdx = -1;
+    enableBoxEditMode(false);
+    gridUIActive = true;
+    renderBoxList();
+}
+
+// Load screen list on startup
+setTimeout(async () => {
+    // Auto-load game
+    try {
+        const r = await fetch('/api/games/load/pokemon-firered', {method:'POST'});
+        const data = await r.json();
+        console.log('Game loaded:', data);
+        await loadScreenList();
+        // Sync grid UI with loaded config
+        try {
+            const ov = await (await fetch('/api/overlay')).json();
+            if (ov.grid) {
+                document.getElementById('gRows').value = ov.grid.rows || 9;
+                document.getElementById('gCols').value = ov.grid.cols || 15;
+                document.getElementById('gRegX').value = ov.region?.x || 0;
+                document.getElementById('gRegY').value = ov.region?.y || 0;
+                document.getElementById('gRegW').value = ov.region?.w || 1;
+                document.getElementById('gRegH').value = ov.region?.h || 1;
+                document.getElementById('gOffX').value = ov.grid.offsetX || 0;
+                document.getElementById('gOffY').value = ov.grid.offsetY || 0;
+                document.getElementById('gOpacity').value = ov.grid.opacity || 0.5;
+                document.getElementById('gColor').value = ov.grid.color || '#00ff00';
+                document.getElementById('gridEnabled').checked = ov.grid.enabled || false;
+            }
+        } catch(e) {}
+    } catch(e) { console.error('Game load failed:', e); }
+    renderBoxList();
+}, 2000);
+
+// === Screen State & Log Display ===
+async function fetchScreenState() {
+    try {
+        const r = await fetch('/api/screen/state');
+        const data = await r.json();
+        const el = document.getElementById('stateDisplay');
+        const state = data.state || {};
+        const boxes = overlayConfig.boxes || [];
+        if (!boxes.length && !Object.keys(state).length) {
+            el.innerHTML = '<div style="color:#555;">データなし</div>';
+            return;
+        }
+        el.innerHTML = boxes.map(b => {
+            const s = state[b.id];
+            const val = s ? s.value : '-';
+            const color = b.color || '#888';
+            return `<div style="display:flex;justify-content:space-between;padding:1px 0;border-bottom:1px solid #1a1a2e;">
+                <span style="color:${color};">${b.label || b.id}</span>
+                <span style="color:#fff;font-weight:bold;">${val}</span>
+            </div>`;
+        }).join('');
+    } catch(e) {}
+}
+
+async function fetchScreenLog() {
+    try {
+        const r = await fetch('/api/screen/log');
+        const data = await r.json();
+        const el = document.getElementById('logDisplay');
+        const entries = (data.log || []).slice(-20).reverse();
+        if (!entries.length) {
+            el.innerHTML = '<div style="color:#555;">ログなし</div>';
+            return;
+        }
+        el.innerHTML = entries.map(e => {
+            const t = new Date(e.time * 1000);
+            const ts = `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}:${t.getSeconds().toString().padStart(2,'0')}`;
+            return `<div style="color:#888;">${ts} <span style="color:#e94560;">${e.box}</span> ${e.old||'—'} → <span style="color:#0f0;">${e.new}</span></div>`;
+        }).join('');
+    } catch(e) {}
+}
+
+async function clearLog() {
+    await fetch('/api/screen/log/clear', {method:'POST'});
+    fetchScreenLog();
+}
+
+// Poll state & log
+setInterval(() => { fetchScreenState(); fetchScreenLog(); }, 1000);
+
+// Refresh box list when overlay updates from server
+setInterval(() => { if (!gridUIActive) renderBoxList(); }, 2000);
+
+// === Box Drag & Resize on Canvas ===
+let dragState = null; // { idx, mode:'move'|'resize', startMx, startMy, origBox }
+
+function enableBoxEditMode(enable) {
+    boxEditMode = enable;
+    const canvas = document.getElementById('overlayCanvas');
+    canvas.classList.toggle('edit-mode', enable);
+}
+
+function hitTestBoxes(mx, my) {
+    // mx, my in normalized 0-1 coords
+    const boxes = overlayConfig.boxes || [];
+    for (let i = boxes.length - 1; i >= 0; i--) {
+        const b = boxes[i];
+        const bx = b.x, by = b.y, bw = b.w, bh = b.h;
+        // Check resize handle (bottom-right corner)
+        const canvas = document.getElementById('overlayCanvas');
+        const cw = canvas.width / devicePixelRatio;
+        const ch = canvas.height / devicePixelRatio;
+        const handleW = HANDLE_SIZE / cw, handleH = HANDLE_SIZE / ch;
+        if (mx >= bx + bw - handleW && mx <= bx + bw + handleW &&
+            my >= by + bh - handleH && my <= by + bh + handleH) {
+            return { idx: i, mode: 'resize' };
+        }
+        // Check move (inside box)
+        if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+            return { idx: i, mode: 'move' };
+        }
+    }
+    return null;
+}
+
+function canvasToNorm(e) {
+    const canvas = document.getElementById('overlayCanvas');
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: (e.clientX - rect.left) / rect.width,
+        y: (e.clientY - rect.top) / rect.height,
+    };
+}
+
+document.getElementById('overlayCanvas').addEventListener('mousedown', (e) => {
+    if (!boxEditMode) return;
+    const pos = canvasToNorm(e);
+    const hit = hitTestBoxes(pos.x, pos.y);
+    if (!hit) return;
+    e.preventDefault();
+    const box = overlayConfig.boxes[hit.idx];
+    dragState = {
+        idx: hit.idx, mode: hit.mode,
+        startMx: pos.x, startMy: pos.y,
+        origBox: { x: box.x, y: box.y, w: box.w, h: box.h },
+    };
+    editBox(hit.idx);
+    gridUIActive = true;
+});
+
+document.getElementById('overlayCanvas').addEventListener('mousemove', (e) => {
+    if (!boxEditMode) return;
+    const pos = canvasToNorm(e);
+    const canvas = document.getElementById('overlayCanvas');
+
+    if (dragState) {
+        e.preventDefault();
+        const dx = pos.x - dragState.startMx;
+        const dy = pos.y - dragState.startMy;
+        const box = overlayConfig.boxes[dragState.idx];
+        const o = dragState.origBox;
+
+        if (dragState.mode === 'move') {
+            box.x = Math.max(0, Math.min(1 - o.w, o.x + dx));
+            box.y = Math.max(0, Math.min(1 - o.h, o.y + dy));
+        } else if (dragState.mode === 'resize') {
+            box.w = Math.max(0.02, Math.min(1 - o.x, o.w + dx));
+            box.h = Math.max(0.02, Math.min(1 - o.y, o.h + dy));
+        }
+
+        // Sync sliders
+        document.getElementById('boxX').value = box.x;
+        document.getElementById('boxY').value = box.y;
+        document.getElementById('boxW').value = box.w;
+        document.getElementById('boxH').value = box.h;
+        document.getElementById('boxXVal').textContent = box.x.toFixed(3);
+        document.getElementById('boxYVal').textContent = box.y.toFixed(3);
+        document.getElementById('boxWVal').textContent = box.w.toFixed(3);
+        document.getElementById('boxHVal').textContent = box.h.toFixed(3);
+    } else {
+        // Cursor hint
+        const hit = hitTestBoxes(pos.x, pos.y);
+        if (hit) {
+            canvas.style.cursor = hit.mode === 'resize' ? 'nwse-resize' : 'move';
+        } else {
+            canvas.style.cursor = 'default';
+        }
+    }
+});
+
+window.addEventListener('mouseup', () => {
+    if (dragState) {
+        renderBoxList();
+        dragState = null;
+    }
+});
+
+// Draw resize handles when in edit mode
+const origDrawOverlay = drawOverlay;
+// Inject handle drawing into the animation loop — handled in drawOverlay via boxEditMode flag
+
+// Override: add handle drawing after boxes
+// We'll patch drawOverlay to draw handles
+const _origRAF = requestAnimationFrame;
+
+// Overlay API fetch (poll config from server, skip if local UI active)
+async function fetchOverlayConfig() {
+    if (gridUIActive) return;  // Local UI has priority
+    try {
+        const r = await fetch('/api/overlay');
+        if (r.ok) overlayConfig = await r.json();
+    } catch(e) {}
+}
+// Poll every 500ms for overlay updates from AI
+setInterval(fetchOverlayConfig, 500);
+
+// ===========================
+// OCR System (Tesseract.js)
+// ===========================
+
+// --- OCR Worker (singleton) ---
+let ocrWorker = null;
+let ocrWorkerReady = false;
+let ocrInitializing = false;
+
+async function initOcrWorker() {
+    if (ocrWorkerReady || ocrInitializing) return;
+    ocrInitializing = true;
+    const statusEl = document.getElementById('ocrStatus');
+    if (statusEl) statusEl.textContent = 'OCR: init...';
+    try {
+        ocrWorker = await Tesseract.createWorker(['jpn', 'eng'], 1, {
+            logger: () => {},  // suppress progress logs
+        });
+        ocrWorkerReady = true;
+        if (statusEl) { statusEl.textContent = 'OCR: idle'; statusEl.style.color = '#888'; }
+        console.log('[OCR] Worker ready');
+    } catch(e) {
+        console.error('[OCR] Worker init failed:', e);
+        if (statusEl) { statusEl.textContent = 'OCR: ERR'; statusEl.style.color = '#f44'; }
+    }
+    ocrInitializing = false;
+}
+
+// OCR Queue — process one box at a time
+let ocrQueue = [];
+let ocrRunning = false;
+
+function enqueueOcr(boxId, imageData) {
+    // Replace existing entry for same box (no duplicates)
+    const idx = ocrQueue.findIndex(q => q.boxId === boxId);
+    if (idx >= 0) {
+        ocrQueue[idx].imageData = imageData;
+    } else {
+        ocrQueue.push({ boxId, imageData });
+    }
+    drainOcrQueue();
+}
+
+async function drainOcrQueue() {
+    if (ocrRunning || !ocrWorkerReady || ocrQueue.length === 0) return;
+    ocrRunning = true;
+    const statusEl = document.getElementById('ocrStatus');
+    if (statusEl) { statusEl.textContent = `OCR: active(${ocrQueue.length})`; statusEl.style.color = '#0cf'; }
+
+    while (ocrQueue.length > 0) {
+        const item = ocrQueue.shift();
+        try {
+            const { data: { text } } = await ocrWorker.recognize(item.imageData);
+            const cleaned = text.trim().replace(/\s+/g, ' ');
+            if (cleaned) {
+                // POST to /api/screen/state
+                fetch('/api/screen/state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [item.boxId]: cleaned }),
+                }).catch(() => {});
+                console.log(`[OCR] ${item.boxId}: "${cleaned}"`);
+            }
+        } catch(e) {
+            console.error('[OCR] recognize failed:', e);
+        }
+    }
+
+    ocrRunning = false;
+    if (statusEl) { statusEl.textContent = 'OCR: idle'; statusEl.style.color = '#888'; }
+}
+
+// --- Change Detection ---
+// Stores previous avg pixel value per box { boxId: {r,g,b} }
+const boxPrevPixels = {};
+const OCR_CHANGE_THRESHOLD = 10;  // RGB平均差分の閾値
+
+// Crop a box from video into a temporary canvas, return ImageData
+function cropBoxFromVideo(box) {
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth || !video.videoHeight) return null;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const sx = Math.round(box.x * vw);
+    const sy = Math.round(box.y * vh);
+    const sw = Math.max(1, Math.round(box.w * vw));
+    const sh = Math.max(1, Math.round(box.h * vh));
+
+    const c = document.createElement('canvas');
+    c.width = sw;
+    c.height = sh;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    return c;
+}
+
+// Analyze HP bar: count green pixels left-to-right to determine HP %
+// Pokemon FR HP bar: green (full) → yellow (mid) → red (low), background is dark/gray
+function analyzeHpBar(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const w = canvas.width, h = canvas.height;
+    // Scan the middle horizontal line(s) of the bar
+    const midY = Math.floor(h / 2);
+    const scanRows = Math.max(1, Math.min(3, Math.floor(h * 0.3)));
+    let totalCols = 0;
+    let filledCols = 0;
+
+    for (let x = 0; x < w; x++) {
+        let isBarPixel = false;
+        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
+            const y = Math.max(0, Math.min(h-1, midY + dy));
+            const d = ctx.getImageData(x, y, 1, 1).data;
+            const r = d[0], g = d[1], b = d[2];
+            // HP bar colors: green (g>100, g>r), yellow (r>100, g>100, b<100), red (r>100, g<80)
+            if ((g > 80 && g > r * 0.7 && g > b) || // green
+                (r > 100 && g > 100 && b < 100) ||   // yellow
+                (r > 120 && g < 80 && b < 80)) {      // red
+                isBarPixel = true;
+                break;
+            }
+        }
+        totalCols++;
+        if (isBarPixel) filledCols++;
+    }
+
+    // Find the rightmost filled column to get the bar extent
+    let rightmostFilled = 0;
+    for (let x = w - 1; x >= 0; x--) {
+        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
+            const y = Math.max(0, Math.min(h-1, midY + dy));
+            const d = ctx.getImageData(x, y, 1, 1).data;
+            const r = d[0], g = d[1], b = d[2];
+            if ((g > 80 && g > r * 0.7 && g > b) || (r > 100 && g > 100 && b < 100) || (r > 120 && g < 80 && b < 80)) {
+                rightmostFilled = x;
+                break;
+            }
+        }
+        if (rightmostFilled > 0) break;
+    }
+
+    // Also find leftmost to get bar start (exclude label area)
+    let leftmostFilled = 0;
+    for (let x = 0; x < w; x++) {
+        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
+            const y = Math.max(0, Math.min(h-1, midY + dy));
+            const d = ctx.getImageData(x, y, 1, 1).data;
+            const r = d[0], g = d[1], b = d[2];
+            if ((g > 80 && g > r * 0.7 && g > b) || (r > 100 && g > 100 && b < 100) || (r > 120 && g < 80 && b < 80)) {
+                leftmostFilled = x;
+                break;
+            }
+        }
+        if (leftmostFilled > 0 || x > w * 0.3) break;
+    }
+
+    if (rightmostFilled <= leftmostFilled) return 0;
+
+    // HP % = (rightmost filled - leftmost) / (bar total width - leftmost) * 100
+    // Assume bar extends to the right edge of the box when full
+    const barWidth = w - leftmostFilled;
+    const filledWidth = rightmostFilled - leftmostFilled;
+    const pct = Math.round(Math.min(100, Math.max(0, (filledWidth / barWidth) * 100)));
+    return pct;
+}
+
+// Sample average RGB of a small center region of the canvas
+function sampleAvgRgb(canvas) {
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const w = canvas.width, h = canvas.height;
+    // Sample center 10x10 (or full if smaller)
+    const sw = Math.min(10, w), sh = Math.min(10, h);
+    const sx = Math.floor((w - sw) / 2), sy = Math.floor((h - sh) / 2);
+    const data = ctx.getImageData(sx, sy, sw, sh).data;
+    let r = 0, g = 0, b = 0;
+    const n = sw * sh;
+    for (let i = 0; i < data.length; i += 4) {
+        r += data[i]; g += data[i+1]; b += data[i+2];
+    }
+    return { r: r/n, g: g/n, b: b/n };
+}
+
+function rgbDiff(a, b) {
+    if (!a || !b) return 999;
+    return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+}
+
+// Main 500ms loop — check each box for pixel change, OCR changed boxes
+let ocrLoopActive = false;
+
+function startOcrLoop() {
+    if (ocrLoopActive) return;
+    ocrLoopActive = true;
+    setInterval(ocrTick, 500);
+}
+
+let prevWholeFrameRgb = null;
+
+async function ocrTick() {
+    if (!ocrWorkerReady) return;
+    const boxes = overlayConfig.boxes || [];
+    if (!boxes.length) return;
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth) return;
+
+    // -- 画面全体の変化チェック (画面遷移検知) --
+    const wholeCanvas = document.createElement('canvas');
+    wholeCanvas.width = 8; wholeCanvas.height = 8;
+    const wholeCtx = wholeCanvas.getContext('2d', { willReadFrequently: true });
+    wholeCtx.drawImage(video, 0, 0, 8, 8);
+    const wholeData = wholeCtx.getImageData(0, 0, 8, 8).data;
+    let wr = 0, wg = 0, wb = 0;
+    const wn = 64;
+    for (let i = 0; i < wholeData.length; i += 4) { wr += wholeData[i]; wg += wholeData[i+1]; wb += wholeData[i+2]; }
+    const curWhole = { r: wr/wn, g: wg/wn, b: wb/wn };
+
+    const screenTransition = rgbDiff(prevWholeFrameRgb, curWhole) > 40;
+    if (screenTransition) {
+        // 画面遷移: 全boxのprev pixelをリセット
+        for (const key of Object.keys(boxPrevPixels)) delete boxPrevPixels[key];
+        console.log('[OCR] Screen transition detected');
+        // 自動判別を試みる
+        if (document.getElementById('autoDetectEnabled')?.checked) {
+            tryAutoDetectScreen();
+        }
+    }
+    prevWholeFrameRgb = curWhole;
+
+    // -- 各boxの変化チェック & OCRエンキュー --
+    for (const box of boxes) {
+        if (!box.id) continue;
+        const cropCanvas = cropBoxFromVideo(box);
+        if (!cropCanvas) continue;
+        const cur = sampleAvgRgb(cropCanvas);
+        const prev = boxPrevPixels[box.id];
+        if (screenTransition || rgbDiff(prev, cur) > OCR_CHANGE_THRESHOLD) {
+            boxPrevPixels[box.id] = cur;
+            if (box.type === 'hp_bar') {
+                // HP bar: ピクセル解析で%を計算
+                const pct = analyzeHpBar(cropCanvas);
+                fetch('/api/screen/state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [box.id]: `${pct}%` }),
+                }).catch(() => {});
+                console.log(`[HP] ${box.id}: ${pct}%`);
+            } else {
+                enqueueOcr(box.id, cropCanvas);
+            }
+        }
+    }
+}
+
+// ===========================
+// Screen Auto-Detection
+// ===========================
+
+let screenSignatures = {};  // { screen_id: { description, signature: [{x,y,r,g,b}] } }
+
+async function loadScreenSignatures() {
+    try {
+        const r = await fetch('/api/screens/signatures');
+        const data = await r.json();
+        screenSignatures = data.signatures || {};
+        console.log('[ScreenDetect] Signatures loaded:', Object.keys(screenSignatures).length, 'screens');
+    } catch(e) {}
+}
+
+// 現在のビデオフレームのピクセル色を指定座標で取得
+function samplePixelFromVideo(xNorm, yNorm) {
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth) return null;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const px = Math.round(xNorm * vw);
+    const py = Math.round(yNorm * vh);
+    const c = document.createElement('canvas');
+    c.width = 1; c.height = 1;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, px, py, 1, 1, 0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2] };
+}
+
+function colorDistance(a, b) {
+    return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+}
+
+async function tryAutoDetectScreen() {
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth) return;
+
+    const THRESHOLD = 30;  // game-info.json の screen_detect.threshold に対応
+
+    let bestMatch = null;
+    let bestScore = Infinity;
+
+    for (const [screenId, sigData] of Object.entries(screenSignatures)) {
+        const sig = sigData.signature || [];
+        if (!sig.length) continue;
+        let totalDist = 0;
+        let failed = false;
+        for (const point of sig) {
+            const cur = samplePixelFromVideo(point.x, point.y);
+            if (!cur) { failed = true; break; }
+            const dist = colorDistance(cur, { r: point.r, g: point.g, b: point.b });
+            if (dist > THRESHOLD * 3) { failed = true; break; }  // 早期打ち切り
+            totalDist += dist;
+        }
+        if (!failed) {
+            const avgDist = totalDist / sig.length;
+            if (avgDist < THRESHOLD && avgDist < bestScore) {
+                bestScore = avgDist;
+                bestMatch = screenId;
+            }
+        }
+    }
+
+    if (bestMatch) {
+        const current = document.getElementById('screenSelect')?.value;
+        if (current !== bestMatch) {
+            console.log(`[ScreenDetect] Matched: ${bestMatch} (score=${bestScore.toFixed(1)})`);
+            // 自動ロード
+            await fetch(`/api/screens/load/${bestMatch}`, { method: 'POST' });
+            const sel = document.getElementById('screenSelect');
+            if (sel) sel.value = bestMatch;
+            gridUIActive = false;
+            setTimeout(renderBoxList, 200);
+        }
+    }
+}
+
+// 「この画面を登録」: 現在のビデオから signature ピクセルをサンプリングして保存
+async function registerCurrentScreenSignature() {
+    const screenId = document.getElementById('screenSelect')?.value;
+    if (!screenId) {
+        console.log('[ScreenDetect] 画面を選択してください');
+        return;
+    }
+    const video = document.getElementById('videoEl');
+    if (!video.videoWidth) {
+        console.log('[ScreenDetect] 映像なし');
+        return;
+    }
+
+    // 5点をランダムサンプリング (中央寄り)
+    const SAMPLE_POINTS = 5;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const c = document.createElement('canvas');
+    c.width = vw; c.height = vh;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, vw, vh);
+
+    const signature = [];
+    // 画面の特徴的な5点を格子状にサンプル (端を避ける)
+    const xs = [0.25, 0.5, 0.75, 0.35, 0.65];
+    const ys = [0.25, 0.5, 0.75, 0.65, 0.35];
+    for (let i = 0; i < SAMPLE_POINTS; i++) {
+        const px = Math.round(xs[i] * vw);
+        const py = Math.round(ys[i] * vh);
+        const d = ctx.getImageData(px, py, 1, 1).data;
+        signature.push({ x: xs[i], y: ys[i], r: d[0], g: d[1], b: d[2] });
+    }
+
+    try {
+        const r = await fetch(`/api/screens/signature/${screenId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ signature }),
+        });
+        const data = await r.json();
+        console.log(`[ScreenDetect] Signature saved for "${screenId}":`, signature);
+        // Reload signatures cache
+        await loadScreenSignatures();
+        // ボタンを一瞬光らせて成功を知らせる
+        const btn = document.getElementById('registerSigBtn');
+        if (btn) {
+            const origStyle = btn.style.background;
+            btn.style.background = '#0f0';
+            setTimeout(() => { btn.style.background = origStyle; }, 500);
+        }
+    } catch(e) {
+        console.error('[ScreenDetect] Save failed:', e);
+    }
+}
+
+function onAutoDetectToggle() {
+    const enabled = document.getElementById('autoDetectEnabled')?.checked;
+    console.log('[ScreenDetect] Auto-detect:', enabled ? 'ON' : 'OFF');
+    if (enabled) {
+        loadScreenSignatures();
+    }
+}
+
+// ===========================
 // Start
 // ===========================
 connect();
+startGamepadPolling();
 loadMacros();
+
+// OCR初期化 (ページロード後に開始)
+window.addEventListener('load', () => {
+    initOcrWorker().then(() => {
+        startOcrLoop();
+    });
+});
+
+// 初回でもWorkerが準備できたらループ開始（loadイベント後に備え）
+setTimeout(() => {
+    if (!ocrLoopActive && ocrWorkerReady) startOcrLoop();
+    loadScreenSignatures();
+}, 3000);
 </script>
 </body>
 </html>
