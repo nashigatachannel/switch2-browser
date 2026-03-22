@@ -230,6 +230,7 @@ body {
     <div class="top-actions">
         <button id="muteBtn" onclick="toggleMute()">🔇 音声ON</button>
         <button onclick="toggleFullscreen()">全画面</button>
+        <button onclick="shutdownServer()" style="background:#600;border-color:#900;">停止</button>
     </div>
 </div>
 
@@ -597,6 +598,15 @@ function toggleFullscreen() {
     } else {
         document.exitFullscreen();
     }
+}
+
+async function shutdownServer() {
+    if (!confirm('サーバーを停止しますか？')) return;
+    try {
+        await fetch('/api/shutdown', { method: 'POST' });
+    } catch(e) { /* server killed, connection drops */ }
+    document.getElementById('status').textContent = 'サーバー停止済み';
+    document.getElementById('status').style.color = '#f44';
 }
 
 // Init video devices
@@ -2088,7 +2098,7 @@ setInterval(fetchOverlayConfig, 500);
 
 // --- State ---
 let templateData = null;
-let templateNorms = {};  // { char: [Float32Array, ...] } 正規化済みベクトル（バリアント配列）
+let templateNorms = {};  // { char: { mask: Int8Array, bbox: {minX,minY,maxX,maxY} } } 二値マスク+bbox
 let tplReady = false;
 let tplLoopActive = false;
 let prevWholeFrameRgb = null;
@@ -2219,38 +2229,90 @@ function binarizeCapture(gray) {
     return { mask, threshold, bgVal };
 }
 
-// テンプレートの二値マスク: -1=背景(0), それ以外=文字(1)
-function buildTemplateMask(pixels) {
+// 二値マスクから文字インク部分のバウンディングボックスを取得
+// 戻り値: { minX, minY, maxX, maxY } (inclusive)。インクなし時は null
+function getMaskBbox(mask, w, h) {
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            // インデックス計算: (y * width + x)
+            if (mask[y * w + x]) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+    if (maxX < 0) return null;  // インクピクセルなし（空マスク）
+    return { minX, minY, maxX, maxY };
+}
+
+// テンプレートの二値マスクとbboxを同時生成
+// -1=背景(0), それ以外=文字(1)
+// 戻り値: { mask: Int8Array, bbox: {minX,minY,maxX,maxY} | null }
+function buildTemplateMask(pixels, tw, th) {
     const mask = new Int8Array(pixels.length);
     for (let i = 0; i < pixels.length; i++) {
         mask[i] = pixels[i] >= 0 ? 1 : 0;
     }
-    return mask;
+    const bbox = getMaskBbox(mask, tw, th);
+    return { mask, bbox };
 }
 
-// テンプレートマスクをキャプチャサイズにアップスケール（nearest neighbor）
-function upscaleMask(tplMask, tw, th, capW, capH) {
-    const out = new Int8Array(capW * capH);
-    for (let y = 0; y < capH; y++) {
-        const sy = Math.min(Math.floor(y * th / capH), th - 1);
-        for (let x = 0; x < capW; x++) {
-            const sx = Math.min(Math.floor(x * tw / capW), tw - 1);
-            out[y * capW + x] = tplMask[sy * tw + sx];
+// bboxでクロップしたマスクをターゲットサイズにリスケール（nearest neighbor）
+// srcBbox が null の場合は全体をリスケール
+function resizeMaskCrop(srcMask, srcW, srcH, srcBbox, dstW, dstH) {
+    const out = new Int8Array(dstW * dstH);
+    const sx0 = srcBbox ? srcBbox.minX : 0;
+    const sy0 = srcBbox ? srcBbox.minY : 0;
+    const cropW = srcBbox ? (srcBbox.maxX - srcBbox.minX + 1) : srcW;
+    const cropH = srcBbox ? (srcBbox.maxY - srcBbox.minY + 1) : srcH;
+    if (cropW <= 0 || cropH <= 0) return out;
+    for (let y = 0; y < dstH; y++) {
+        // nearest neighbor: ソースのクロップ領域内でのY座標
+        const sy = sy0 + Math.min(Math.floor(y * cropH / dstH), cropH - 1);
+        for (let x = 0; x < dstW; x++) {
+            const sx = sx0 + Math.min(Math.floor(x * cropW / dstW), cropW - 1);
+            // インデックス計算: (y * width + x) — 行優先(row-major)
+            out[y * dstW + x] = srcMask[sy * srcW + sx];
         }
     }
     return out;
 }
 
-// 二値マスク同士の一致率 (IoU: Intersection over Union)
-function matchMaskIoU(capMask, tplMask) {
-    const n = capMask.length;
+// 二値マスク同士の IoU (Intersection over Union)
+// 同サイズのマスクを前提とする
+function calcIoU(maskA, maskB) {
+    const n = maskA.length;
     let intersection = 0, union = 0;
     for (let i = 0; i < n; i++) {
-        const c = capMask[i], t = tplMask[i];
-        if (c || t) union++;
-        if (c && t) intersection++;
+        const a = maskA[i], b = maskB[i];
+        if (a || b) union++;
+        if (a && b) intersection++;
     }
     return union > 0 ? intersection / union : 0;
+}
+
+// bboxベースのIoU比較:
+// 1. キャプチャマスクのbboxをクロップ
+// 2. テンプレートのbbox済みクロップをキャプチャbboxサイズにリスケール
+// 3. リスケール後にIoU比較
+function matchMaskIoU(capMask, capW, capH, tplMask, tplW, tplH, tplBbox) {
+    // キャプチャ側のbboxを取得
+    const capBbox = getMaskBbox(capMask, capW, capH);
+    if (!capBbox) return 0;  // キャプチャが空マスク
+
+    const dstW = capBbox.maxX - capBbox.minX + 1;
+    const dstH = capBbox.maxY - capBbox.minY + 1;
+
+    // キャプチャのbbox領域を切り出す（リスケールなし）
+    const capCrop = resizeMaskCrop(capMask, capW, capH, capBbox, dstW, dstH);
+
+    // テンプレートのbbox領域をキャプチャbboxサイズにリスケール
+    const tplCrop = resizeMaskCrop(tplMask, tplW, tplH, tplBbox, dstW, dstH);
+
+    return calcIoU(capCrop, tplCrop);
 }
 
 function buildTemplateNorms() {
@@ -2264,16 +2326,18 @@ function buildTemplateNorms() {
     tplUpscaledSize = { w: charW, h: charH };
 
     for (const [char, tpl] of Object.entries(tplSet)) {
-        templateNorms[char] = buildTemplateMask(tpl.pixels);
+        // mask と bbox を同時生成
+        const { mask, bbox } = buildTemplateMask(tpl.pixels, charW, charH);
+        templateNorms[char] = { mask, bbox };
     }
 
     console.log(`[TPL] Built ${Object.keys(templateNorms).length} masks at ${charW}x${charH}`);
 
-    // Worker にも送信（二値マスク）
+    // Worker にも送信（二値マスク + bbox）
     if (tplWorker) {
         const masksTransfer = {};
-        for (const [char, mask] of Object.entries(templateNorms)) {
-            masksTransfer[char] = Array.from(mask);
+        for (const [char, entry] of Object.entries(templateNorms)) {
+            masksTransfer[char] = { mask: Array.from(entry.mask), bbox: entry.bbox };
         }
         tplWorker.postMessage({ type: 'loadTemplates', masks: masksTransfer, tw: tplUpscaledSize.w, th: tplUpscaledSize.h });
     }
@@ -2287,8 +2351,11 @@ let tplJobId = 0;
 
 function initTplWorker() {
     const workerCode = `
+        // { char: { mask: Int8Array, bbox: {minX,minY,maxX,maxY}|null } }
         let templateMasks = {};
+        let tplW = 8, tplH = 12;
 
+        // キャプチャグレースケールを二値化（背景=0, 文字=1）
         function binarize(gray) {
             const n = gray.length;
             const hist = new Int32Array(256);
@@ -2309,26 +2376,63 @@ function initTplWorker() {
             return mask;
         }
 
-        function matchIoU(capMask, tplMask) {
+        // 二値マスクから文字インク部分のバウンディングボックスを取得
+        // インデックス計算: (y * width + x) — 行優先(row-major)
+        function getMaskBbox(mask, w, h) {
+            let minX = w, minY = h, maxX = -1, maxY = -1;
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    if (mask[y * w + x]) {
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+            }
+            if (maxX < 0) return null;
+            return { minX, minY, maxX, maxY };
+        }
+
+        // bboxでクロップしたマスクをターゲットサイズにリスケール（nearest neighbor）
+        // srcBbox が null の場合は全体をリスケール
+        function resizeMaskCrop(srcMask, srcW, srcH, srcBbox, dstW, dstH) {
+            const out = new Int8Array(dstW * dstH);
+            const sx0 = srcBbox ? srcBbox.minX : 0;
+            const sy0 = srcBbox ? srcBbox.minY : 0;
+            const cropW = srcBbox ? (srcBbox.maxX - srcBbox.minX + 1) : srcW;
+            const cropH = srcBbox ? (srcBbox.maxY - srcBbox.minY + 1) : srcH;
+            if (cropW <= 0 || cropH <= 0) return out;
+            for (let y = 0; y < dstH; y++) {
+                const sy = sy0 + Math.min(Math.floor(y * cropH / dstH), cropH - 1);
+                for (let x = 0; x < dstW; x++) {
+                    const sx = sx0 + Math.min(Math.floor(x * cropW / dstW), cropW - 1);
+                    out[y * dstW + x] = srcMask[sy * srcW + sx];
+                }
+            }
+            return out;
+        }
+
+        // 同サイズの二値マスク同士の IoU
+        function calcIoU(maskA, maskB) {
             let inter = 0, union = 0;
-            for (let i = 0; i < capMask.length; i++) {
-                const c = capMask[i], t = tplMask[i];
-                if (c || t) union++;
-                if (c && t) inter++;
+            for (let i = 0; i < maskA.length; i++) {
+                const a = maskA[i], b = maskB[i];
+                if (a || b) union++;
+                if (a && b) inter++;
             }
             return union > 0 ? inter / union : 0;
         }
 
-        function upscale(mask, tw, th, cw, ch) {
-            const out = new Int8Array(cw * ch);
-            for (let y = 0; y < ch; y++) {
-                const sy = Math.min(Math.floor(y * th / ch), th - 1);
-                for (let x = 0; x < cw; x++) {
-                    const sx = Math.min(Math.floor(x * tw / cw), tw - 1);
-                    out[y * cw + x] = mask[sy * tw + sx];
-                }
-            }
-            return out;
+        // bboxベースのIoU比較
+        function matchIoU(capMask, cw, ch, tplMask, tplBbox) {
+            const capBbox = getMaskBbox(capMask, cw, ch);
+            if (!capBbox) return 0;
+            const dstW = capBbox.maxX - capBbox.minX + 1;
+            const dstH = capBbox.maxY - capBbox.minY + 1;
+            const capCrop = resizeMaskCrop(capMask, cw, ch, capBbox, dstW, dstH);
+            const tplCrop = resizeMaskCrop(tplMask, tplW, tplH, tplBbox, dstW, dstH);
+            return calcIoU(capCrop, tplCrop);
         }
 
         self.onmessage = function(e) {
@@ -2337,8 +2441,8 @@ function initTplWorker() {
                 templateMasks = {};
                 tplW = msg.tw || 8;
                 tplH = msg.th || 12;
-                for (const [char, arr] of Object.entries(msg.masks)) {
-                    templateMasks[char] = new Int8Array(arr);
+                for (const [char, entry] of Object.entries(msg.masks)) {
+                    templateMasks[char] = { mask: new Int8Array(entry.mask), bbox: entry.bbox };
                 }
                 self.postMessage({ type: 'ready', count: Object.keys(templateMasks).length });
                 return;
@@ -2350,9 +2454,8 @@ function initTplWorker() {
                     const cw = item.w || 8, ch = item.h || 12;
                     const capMask = binarize(gray);
                     let bestChar = '', bestScore = -1;
-                    for (const [char, tplMask] of Object.entries(templateMasks)) {
-                        const upTpl = upscale(tplMask, tplW, tplH, cw, ch);
-                        const score = matchIoU(capMask, upTpl);
+                    for (const [char, entry] of Object.entries(templateMasks)) {
+                        const score = matchIoU(capMask, cw, ch, entry.mask, entry.bbox);
                         if (score > bestScore) { bestScore = score; bestChar = char; }
                     }
                     results.push({ char: bestChar, score: bestScore, variance: item.variance });
@@ -2383,7 +2486,7 @@ function workerMatchBatch(items) {
     });
 }
 
-// 二値マスク比較: キャプチャ原寸で二値化、テンプレートをアップスケールしてIoU比較
+// 二値マスク比較: キャプチャ原寸で二値化し、bboxクロップ+リスケール後にIoU比較
 function matchCharMask(grayVec, capW, capH) {
     const { mask: capMask } = binarizeCapture(grayVec);
     const tw = tplUpscaledSize.w;
@@ -2391,10 +2494,9 @@ function matchCharMask(grayVec, capW, capH) {
 
     let bestChar = '';
     let bestScore = -1;
-    for (const [char, tplMask] of Object.entries(templateNorms)) {
-        const upTpl = upscaleMask(tplMask, tw, th, capW, capH);
-        const score = matchMaskIoU(capMask, upTpl);
-        if (dot > bestScore) { bestScore = dot; bestChar = char; }
+    for (const [char, entry] of Object.entries(templateNorms)) {
+        const score = matchMaskIoU(capMask, capW, capH, entry.mask, tw, th, entry.bbox);
+        if (score > bestScore) { bestScore = score; bestChar = char; }
     }
     return { char: bestChar, score: bestScore };
 }
@@ -2804,9 +2906,11 @@ function testMatchCell() {
 
         // 二値マスク比較でトップ5取得
         const { mask: capMask } = binarizeCapture(gray);
+        const tw = tplUpscaledSize.w;
+        const th = tplUpscaledSize.h;
         const scores = [];
-        for (const [char, tplMask] of Object.entries(templateNorms)) {
-            scores.push({ char, score: matchMaskIoU(capMask, tplMask) });
+        for (const [char, entry] of Object.entries(templateNorms)) {
+            scores.push({ char, score: matchMaskIoU(capMask, cellPixW, cellPixH, entry.mask, tw, th, entry.bbox) });
         }
         scores.sort((a, b) => b.score - a.score);
 
@@ -2892,7 +2996,7 @@ function testSingleChar() {
     const tImg = renderTplImage(tpl, tw, th, 4);
     tplDiv.appendChild(tImg);
     // テンプレートマスク画像
-    const tplMask = buildTemplateMask(tpl.pixels);
+    const { mask: tplMask, bbox: tplBbox } = buildTemplateMask(tpl.pixels, tw, th);
     const tMaskCanvas = renderMaskImage(tplMask, tw, th, 4, '#0f0');
     const tMaskLabel = document.createElement('span');
     tMaskLabel.style.cssText = 'color:#888;font-size:11px;';
@@ -2948,9 +3052,8 @@ function testSingleChar() {
             cMaskCanvas.style.cssText = 'border:1px solid #333;max-height:60px;';
             cellDiv.appendChild(cMaskCanvas);
 
-            // テンプレートマスクをキャプチャサイズにアップスケールしてIoU
-            const upTpl = upscaleMask(tplMask, tw, th, cellW, cellH);
-            const iou = matchMaskIoU(capMask, upTpl);
+            // テンプレートマスクをキャプチャサイズにbboxベースでIoU
+            const iou = matchMaskIoU(capMask, cellW, cellH, tplMask, tw, th, tplBbox);
             const pct = Math.round(iou * 100);
             const scoreLabel = document.createElement('span');
             scoreLabel.style.cssText = `font-size:14px;font-weight:bold;color:${pct > 70 ? '#0f0' : pct > 40 ? '#ff0' : '#f44'};`;

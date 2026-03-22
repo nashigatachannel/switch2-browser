@@ -571,13 +571,39 @@ async def keepalive():
                         macro_lx, macro_ly, macro_rx, macro_ry)
         await asyncio.sleep(0.05)
 
+@app.post("/api/shutdown")
+async def shutdown_server():
+    """Shutdown the server gracefully."""
+    import os, signal
+    asyncio.get_event_loop().call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    return JSONResponse({"ok": True, "message": "shutting down"})
+
 @app.on_event("startup")
 async def startup():
     serial_connect()
     asyncio.create_task(keepalive())
 
+def kill_existing_on_port(port: int):
+    """Kill any existing process listening on the given port (Windows)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                pid = int(parts[-1])
+                if pid > 0:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], timeout=5)
+                    print(f"Killed existing process on port {port} (PID {pid})")
+    except Exception as e:
+        print(f"Port cleanup skipped: {e}")
+
 if __name__ == "__main__":
     import uvicorn
+    kill_existing_on_port(8765)
     print(f"Starting Switch 2 Browser on http://localhost:8765")
     print(f"Serial port: {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=8765, log_level="warning")
