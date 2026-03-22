@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Switch 2 Browser</title>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@7/dist/tesseract.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -226,7 +225,7 @@ body {
         <select id="deviceSelect"><option value="">映像デバイスを選択...</option></select>
         <span id="status">Connecting...</span>
         <span id="fpsDisplay" style="font-size:10px;color:#888;font-family:monospace;"></span>
-        <span id="ocrStatus" style="font-size:10px;color:#555;font-family:monospace;">OCR: -</span>
+        <span id="tplStatus" style="font-size:10px;color:#555;font-family:monospace;">TPL: -</span>
     </div>
     <div class="top-actions">
         <button id="muteBtn" onclick="toggleMute()">🔇 音声ON</button>
@@ -356,10 +355,49 @@ body {
     </div><!-- /screenBody -->
 </div>
 
+<!-- Template Matching Panel -->
+<div class="macro-panel" id="tplPanel">
+    <div class="macro-header">
+        <h2>Template</h2><button class="collapse-btn" onclick="togglePanel('tplBody',this)">▼</button>
+    </div>
+    <div id="tplBody" class="collapsible-body" style="font-size:11px;color:#aaa;">
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:70px;">Threshold</span>
+            <input type="range" id="tplThreshold" min="0.1" max="0.95" step="0.05" value="0.5" style="flex:1;" oninput="tplMatchThreshold=parseFloat(this.value);document.getElementById('tplThreshVal').textContent=this.value;">
+            <span id="tplThreshVal" style="width:30px;">0.5</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <span style="width:70px;">Scale</span>
+            <input type="range" id="tplScale" min="1" max="8" step="0.1" value="2.7" style="flex:1;" oninput="document.getElementById('tplScaleVal').textContent=this.value; buildTemplateNorms();">
+            <span id="tplScaleVal" style="width:30px;">2.7</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
+            <button onclick="forceRescan()" style="background:#07a;border:1px solid #09c;color:#fff;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;">再読取</button>
+            <button onclick="showTemplateTable()" style="background:#705;border:1px solid #a07;color:#fff;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;">あいうえお表</button>
+            <button onclick="testMatchCell()" style="background:#a50;border:1px solid #c70;color:#fff;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;">近似テスト</button>
+            <input type="text" id="tplTestChar" maxlength="1" placeholder="文字" style="width:30px;text-align:center;background:#0a0a1a;border:1px solid #3a3a5a;color:#0f0;font-size:12px;padding:2px;border-radius:3px;">
+            <button onclick="testSingleChar()" style="background:#059;border:1px solid #07b;color:#fff;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;">1文字テスト</button>
+        </div>
+        <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;align-items:center;">
+            <span style="font-size:10px;color:#888;">キャプチャ:</span>
+            <select id="captureTab" style="background:#2a2a4a;border:1px solid #3a3a5a;color:#eee;border-radius:4px;padding:2px 4px;font-size:10px;">
+                <option value="hiragana">ひらがな</option>
+                <option value="katakana">カタカナ</option>
+                <option value="abc">ABC</option>
+            </select>
+            <button onclick="captureFromScreen()" style="background:#0a7;border:1px solid #0c9;color:#fff;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;">📸 キャプチャ保存</button>
+            <span id="captureStatus" style="font-size:10px;color:#888;"></span>
+        </div>
+        <div id="tplDebugOutput" style="font-size:9px;color:#0cf;font-family:monospace;max-height:100px;overflow-y:auto;margin-top:4px;white-space:pre-wrap;"></div>
+        <div id="tplTestResult" style="max-height:250px;overflow-y:auto;margin-top:4px;"></div>
+        <div id="tplCharTable" style="max-height:300px;overflow-y:auto;margin-top:4px;"></div>
+    </div>
+</div>
+
 <!-- Screen State & Log Panel -->
 <div class="macro-panel" id="statePanel">
     <div class="macro-header">
-        <h2>State</h2><button class="collapse-btn" onclick="togglePanel('stateBody',this)">▼</button>
+        <h2>State</h2><button onclick="forceRescan()" style="background:#07a;border:1px solid #09c;color:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">再読取</button><button class="collapse-btn" onclick="togglePanel('stateBody',this)">▼</button>
     </div>
     <div id="stateBody" class="collapsible-body">
         <div id="stateDisplay" style="font-size:11px;color:#ccc;font-family:monospace;"></div>
@@ -1843,6 +1881,9 @@ setTimeout(async () => {
         const r = await fetch('/api/games/load/pokemon-firered', {method:'POST'});
         const data = await r.json();
         console.log('Game loaded:', data);
+        initTplWorker();
+        await loadTemplates();
+        if (tplReady) startTplLoop();
         await loadScreenList();
         // Sync grid UI with loaded config
         try {
@@ -2042,83 +2083,20 @@ async function fetchOverlayConfig() {
 setInterval(fetchOverlayConfig, 500);
 
 // ===========================
-// OCR System (Tesseract.js)
+// Template Matching System
 // ===========================
 
-// --- OCR Worker (singleton) ---
-let ocrWorker = null;
-let ocrWorkerReady = false;
-let ocrInitializing = false;
-
-async function initOcrWorker() {
-    if (ocrWorkerReady || ocrInitializing) return;
-    ocrInitializing = true;
-    const statusEl = document.getElementById('ocrStatus');
-    if (statusEl) statusEl.textContent = 'OCR: init...';
-    try {
-        ocrWorker = await Tesseract.createWorker(['jpn', 'eng'], 1, {
-            logger: () => {},  // suppress progress logs
-        });
-        ocrWorkerReady = true;
-        if (statusEl) { statusEl.textContent = 'OCR: idle'; statusEl.style.color = '#888'; }
-        console.log('[OCR] Worker ready');
-    } catch(e) {
-        console.error('[OCR] Worker init failed:', e);
-        if (statusEl) { statusEl.textContent = 'OCR: ERR'; statusEl.style.color = '#f44'; }
-    }
-    ocrInitializing = false;
-}
-
-// OCR Queue — process one box at a time
-let ocrQueue = [];
-let ocrRunning = false;
-
-function enqueueOcr(boxId, imageData) {
-    // Replace existing entry for same box (no duplicates)
-    const idx = ocrQueue.findIndex(q => q.boxId === boxId);
-    if (idx >= 0) {
-        ocrQueue[idx].imageData = imageData;
-    } else {
-        ocrQueue.push({ boxId, imageData });
-    }
-    drainOcrQueue();
-}
-
-async function drainOcrQueue() {
-    if (ocrRunning || !ocrWorkerReady || ocrQueue.length === 0) return;
-    ocrRunning = true;
-    const statusEl = document.getElementById('ocrStatus');
-    if (statusEl) { statusEl.textContent = `OCR: active(${ocrQueue.length})`; statusEl.style.color = '#0cf'; }
-
-    while (ocrQueue.length > 0) {
-        const item = ocrQueue.shift();
-        try {
-            const { data: { text } } = await ocrWorker.recognize(item.imageData);
-            const cleaned = text.trim().replace(/\s+/g, ' ');
-            if (cleaned) {
-                // POST to /api/screen/state
-                fetch('/api/screen/state', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ [item.boxId]: cleaned }),
-                }).catch(() => {});
-                console.log(`[OCR] ${item.boxId}: "${cleaned}"`);
-            }
-        } catch(e) {
-            console.error('[OCR] recognize failed:', e);
-        }
-    }
-
-    ocrRunning = false;
-    if (statusEl) { statusEl.textContent = 'OCR: idle'; statusEl.style.color = '#888'; }
-}
-
-// --- Change Detection ---
-// Stores previous avg pixel value per box { boxId: {r,g,b} }
+// --- State ---
+let templateData = null;
+let templateNorms = {};  // { char: [Float32Array, ...] } 正規化済みベクトル（バリアント配列）
+let tplReady = false;
+let tplLoopActive = false;
+let prevWholeFrameRgb = null;
 const boxPrevPixels = {};
-const OCR_CHANGE_THRESHOLD = 10;  // RGB平均差分の閾値
+const TPL_CHANGE_THRESHOLD = 10;
+let tplMatchThreshold = 0.5;
 
-// Crop a box from video into a temporary canvas, return ImageData
+// --- Helpers ---
 function cropBoxFromVideo(box) {
     const video = document.getElementById('videoEl');
     if (!video.videoWidth || !video.videoHeight) return null;
@@ -2128,90 +2106,17 @@ function cropBoxFromVideo(box) {
     const sy = Math.round(box.y * vh);
     const sw = Math.max(1, Math.round(box.w * vw));
     const sh = Math.max(1, Math.round(box.h * vh));
-
     const c = document.createElement('canvas');
-    c.width = sw;
-    c.height = sh;
+    c.width = sw; c.height = sh;
     const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
     return c;
 }
 
-// Analyze HP bar: count green pixels left-to-right to determine HP %
-// Pokemon FR HP bar: green (full) → yellow (mid) → red (low), background is dark/gray
-function analyzeHpBar(canvas) {
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const w = canvas.width, h = canvas.height;
-    // Scan the middle horizontal line(s) of the bar
-    const midY = Math.floor(h / 2);
-    const scanRows = Math.max(1, Math.min(3, Math.floor(h * 0.3)));
-    let totalCols = 0;
-    let filledCols = 0;
-
-    for (let x = 0; x < w; x++) {
-        let isBarPixel = false;
-        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
-            const y = Math.max(0, Math.min(h-1, midY + dy));
-            const d = ctx.getImageData(x, y, 1, 1).data;
-            const r = d[0], g = d[1], b = d[2];
-            // HP bar colors: green (g>100, g>r), yellow (r>100, g>100, b<100), red (r>100, g<80)
-            if ((g > 80 && g > r * 0.7 && g > b) || // green
-                (r > 100 && g > 100 && b < 100) ||   // yellow
-                (r > 120 && g < 80 && b < 80)) {      // red
-                isBarPixel = true;
-                break;
-            }
-        }
-        totalCols++;
-        if (isBarPixel) filledCols++;
-    }
-
-    // Find the rightmost filled column to get the bar extent
-    let rightmostFilled = 0;
-    for (let x = w - 1; x >= 0; x--) {
-        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
-            const y = Math.max(0, Math.min(h-1, midY + dy));
-            const d = ctx.getImageData(x, y, 1, 1).data;
-            const r = d[0], g = d[1], b = d[2];
-            if ((g > 80 && g > r * 0.7 && g > b) || (r > 100 && g > 100 && b < 100) || (r > 120 && g < 80 && b < 80)) {
-                rightmostFilled = x;
-                break;
-            }
-        }
-        if (rightmostFilled > 0) break;
-    }
-
-    // Also find leftmost to get bar start (exclude label area)
-    let leftmostFilled = 0;
-    for (let x = 0; x < w; x++) {
-        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
-            const y = Math.max(0, Math.min(h-1, midY + dy));
-            const d = ctx.getImageData(x, y, 1, 1).data;
-            const r = d[0], g = d[1], b = d[2];
-            if ((g > 80 && g > r * 0.7 && g > b) || (r > 100 && g > 100 && b < 100) || (r > 120 && g < 80 && b < 80)) {
-                leftmostFilled = x;
-                break;
-            }
-        }
-        if (leftmostFilled > 0 || x > w * 0.3) break;
-    }
-
-    if (rightmostFilled <= leftmostFilled) return 0;
-
-    // HP % = (rightmost filled - leftmost) / (bar total width - leftmost) * 100
-    // Assume bar extends to the right edge of the box when full
-    const barWidth = w - leftmostFilled;
-    const filledWidth = rightmostFilled - leftmostFilled;
-    const pct = Math.round(Math.min(100, Math.max(0, (filledWidth / barWidth) * 100)));
-    return pct;
-}
-
-// Sample average RGB of a small center region of the canvas
 function sampleAvgRgb(canvas) {
     if (!canvas) return null;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const w = canvas.width, h = canvas.height;
-    // Sample center 10x10 (or full if smaller)
     const sw = Math.min(10, w), sh = Math.min(10, h);
     const sx = Math.floor((w - sw) / 2), sy = Math.floor((h - sh) / 2);
     const data = ctx.getImageData(sx, sy, sw, sh).data;
@@ -2228,69 +2133,1003 @@ function rgbDiff(a, b) {
     return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
 }
 
-// Main 500ms loop — check each box for pixel change, OCR changed boxes
-let ocrLoopActive = false;
-
-function startOcrLoop() {
-    if (ocrLoopActive) return;
-    ocrLoopActive = true;
-    setInterval(ocrTick, 500);
+// Analyze HP bar (keep from original)
+function analyzeHpBar(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const w = canvas.width, h = canvas.height;
+    const midY = Math.floor(h / 2);
+    const scanRows = Math.max(1, Math.min(3, Math.floor(h * 0.3)));
+    let rightmostFilled = 0, leftmostFilled = 0;
+    function isHpPixel(r, g, b) {
+        return (g > 80 && g > r * 0.7 && g > b) || (r > 100 && g > 100 && b < 100) || (r > 120 && g < 80 && b < 80);
+    }
+    for (let x = w - 1; x >= 0; x--) {
+        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
+            const y = Math.max(0, Math.min(h-1, midY + dy));
+            const d = ctx.getImageData(x, y, 1, 1).data;
+            if (isHpPixel(d[0], d[1], d[2])) { rightmostFilled = x; break; }
+        }
+        if (rightmostFilled > 0) break;
+    }
+    for (let x = 0; x < w; x++) {
+        for (let dy = -Math.floor(scanRows/2); dy <= Math.floor(scanRows/2); dy++) {
+            const y = Math.max(0, Math.min(h-1, midY + dy));
+            const d = ctx.getImageData(x, y, 1, 1).data;
+            if (isHpPixel(d[0], d[1], d[2])) { leftmostFilled = x; break; }
+        }
+        if (leftmostFilled > 0 || x > w * 0.3) break;
+    }
+    if (rightmostFilled <= leftmostFilled) return 0;
+    const barWidth = w - leftmostFilled;
+    const filledWidth = rightmostFilled - leftmostFilled;
+    return Math.round(Math.min(100, Math.max(0, (filledWidth / barWidth) * 100)));
 }
 
-let prevWholeFrameRgb = null;
+// --- Template Loader ---
+async function loadTemplates() {
+    const statusEl = document.getElementById('tplStatus');
+    if (statusEl) statusEl.textContent = 'TPL: loading...';
+    try {
+        const r = await fetch('/api/templates');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        templateData = await r.json();
+        buildTemplateNorms();
+        tplReady = true;
+        const count = Object.keys(templateNorms).length;
+        if (statusEl) { statusEl.textContent = `TPL: ${count} chars`; statusEl.style.color = '#0f0'; }
+        console.log(`[TPL] Loaded: ${count} chars`);
+    } catch(e) {
+        console.error('[TPL] Load failed:', e);
+        if (statusEl) { statusEl.textContent = 'TPL: ERR'; statusEl.style.color = '#f44'; }
+    }
+}
 
-async function ocrTick() {
-    if (!ocrWorkerReady) return;
+// --- Build normalized vectors for NCC ---
+// === 二値マスク比較方式 ===
+// テンプレートの-1=背景(0), それ以外=文字(1) の二値マスクを生成
+// キャプチャも背景検出→二値化して、マスク同士の一致率で比較
+
+let tplUpscaledSize = { w: 0, h: 0 };
+
+// キャプチャのグレースケールを二値化（背景=0, 文字=1）
+// 背景色（最頻値）からの距離で判定。影も文字として拾う。
+function binarizeCapture(gray) {
+    const n = gray.length;
+    // ヒストグラムで最頻値（=背景色）を検出
+    const hist = new Int32Array(256);
+    for (let i = 0; i < n; i++) hist[Math.round(Math.max(0, Math.min(255, gray[i])))]++;
+    let bgVal = 0, bgCount = 0;
+    for (let i = 0; i < 256; i++) {
+        if (hist[i] > bgCount) { bgCount = hist[i]; bgVal = i; }
+    }
+    // 背景色からの距離が閾値以上なら文字（輪郭も影も拾う）
+    // 閾値: 背景の標準偏差の2倍 or 最低20
+    let bgSumSq = 0, bgN = 0;
+    for (let i = 0; i < n; i++) {
+        const d = Math.abs(gray[i] - bgVal);
+        if (d < 30) { bgSumSq += d * d; bgN++; }
+    }
+    const bgStd = bgN > 0 ? Math.sqrt(bgSumSq / bgN) : 10;
+    const threshold = Math.max(20, bgStd * 3);
+
+    const mask = new Int8Array(n);
+    for (let i = 0; i < n; i++) {
+        mask[i] = Math.abs(gray[i] - bgVal) >= threshold ? 1 : 0;
+    }
+    return { mask, threshold, bgVal };
+}
+
+// テンプレートの二値マスク: -1=背景(0), それ以外=文字(1)
+function buildTemplateMask(pixels) {
+    const mask = new Int8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) {
+        mask[i] = pixels[i] >= 0 ? 1 : 0;
+    }
+    return mask;
+}
+
+// テンプレートマスクをキャプチャサイズにアップスケール（nearest neighbor）
+function upscaleMask(tplMask, tw, th, capW, capH) {
+    const out = new Int8Array(capW * capH);
+    for (let y = 0; y < capH; y++) {
+        const sy = Math.min(Math.floor(y * th / capH), th - 1);
+        for (let x = 0; x < capW; x++) {
+            const sx = Math.min(Math.floor(x * tw / capW), tw - 1);
+            out[y * capW + x] = tplMask[sy * tw + sx];
+        }
+    }
+    return out;
+}
+
+// 二値マスク同士の一致率 (IoU: Intersection over Union)
+function matchMaskIoU(capMask, tplMask) {
+    const n = capMask.length;
+    let intersection = 0, union = 0;
+    for (let i = 0; i < n; i++) {
+        const c = capMask[i], t = tplMask[i];
+        if (c || t) union++;
+        if (c && t) intersection++;
+    }
+    return union > 0 ? intersection / union : 0;
+}
+
+function buildTemplateNorms() {
+    templateNorms = {};
+    const tplSet = templateData.templates || {};
+    const variantMeta = templateData.variant_meta || {};
+    const meta = variantMeta['tall'] || templateData.meta || {};
+    const charW = meta.char_width || 8;
+    const charH = meta.char_height || 12;
+
+    tplUpscaledSize = { w: charW, h: charH };
+
+    for (const [char, tpl] of Object.entries(tplSet)) {
+        templateNorms[char] = buildTemplateMask(tpl.pixels);
+    }
+
+    console.log(`[TPL] Built ${Object.keys(templateNorms).length} masks at ${charW}x${charH}`);
+
+    // Worker にも送信（二値マスク）
+    if (tplWorker) {
+        const masksTransfer = {};
+        for (const [char, mask] of Object.entries(templateNorms)) {
+            masksTransfer[char] = Array.from(mask);
+        }
+        tplWorker.postMessage({ type: 'loadTemplates', masks: masksTransfer, tw: tplUpscaledSize.w, th: tplUpscaledSize.h });
+    }
+}
+
+// --- Mask Worker (別スレッドで二値マスク比較) ---
+let tplWorker = null;
+let tplWorkerReady = false;
+let tplPendingJobs = {};
+let tplJobId = 0;
+
+function initTplWorker() {
+    const workerCode = `
+        let templateMasks = {};
+
+        function binarize(gray) {
+            const n = gray.length;
+            const hist = new Int32Array(256);
+            for (let i = 0; i < n; i++) hist[Math.round(Math.max(0, Math.min(255, gray[i])))]++;
+            let bgVal = 0, bgCount = 0;
+            for (let i = 0; i < 256; i++) { if (hist[i] > bgCount) { bgCount = hist[i]; bgVal = i; } }
+            let bgSumSq = 0, bgN = 0;
+            for (let i = 0; i < n; i++) {
+                const d = Math.abs(gray[i] - bgVal);
+                if (d < 30) { bgSumSq += d * d; bgN++; }
+            }
+            const bgStd = bgN > 0 ? Math.sqrt(bgSumSq / bgN) : 10;
+            const threshold = Math.max(20, bgStd * 3);
+            const mask = new Int8Array(n);
+            for (let i = 0; i < n; i++) {
+                mask[i] = Math.abs(gray[i] - bgVal) >= threshold ? 1 : 0;
+            }
+            return mask;
+        }
+
+        function matchIoU(capMask, tplMask) {
+            let inter = 0, union = 0;
+            for (let i = 0; i < capMask.length; i++) {
+                const c = capMask[i], t = tplMask[i];
+                if (c || t) union++;
+                if (c && t) inter++;
+            }
+            return union > 0 ? inter / union : 0;
+        }
+
+        function upscale(mask, tw, th, cw, ch) {
+            const out = new Int8Array(cw * ch);
+            for (let y = 0; y < ch; y++) {
+                const sy = Math.min(Math.floor(y * th / ch), th - 1);
+                for (let x = 0; x < cw; x++) {
+                    const sx = Math.min(Math.floor(x * tw / cw), tw - 1);
+                    out[y * cw + x] = mask[sy * tw + sx];
+                }
+            }
+            return out;
+        }
+
+        self.onmessage = function(e) {
+            const msg = e.data;
+            if (msg.type === 'loadTemplates') {
+                templateMasks = {};
+                tplW = msg.tw || 8;
+                tplH = msg.th || 12;
+                for (const [char, arr] of Object.entries(msg.masks)) {
+                    templateMasks[char] = new Int8Array(arr);
+                }
+                self.postMessage({ type: 'ready', count: Object.keys(templateMasks).length });
+                return;
+            }
+            if (msg.type === 'matchBatch') {
+                const results = [];
+                for (const item of msg.items) {
+                    const gray = new Float32Array(item.gray);
+                    const cw = item.w || 8, ch = item.h || 12;
+                    const capMask = binarize(gray);
+                    let bestChar = '', bestScore = -1;
+                    for (const [char, tplMask] of Object.entries(templateMasks)) {
+                        const upTpl = upscale(tplMask, tplW, tplH, cw, ch);
+                        const score = matchIoU(capMask, upTpl);
+                        if (score > bestScore) { bestScore = score; bestChar = char; }
+                    }
+                    results.push({ char: bestChar, score: bestScore, variance: item.variance });
+                }
+                self.postMessage({ type: 'batchResult', jobId: msg.jobId, results });
+            }
+        };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    tplWorker = new Worker(URL.createObjectURL(blob));
+    tplWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'ready') {
+            tplWorkerReady = true;
+            console.log(`[TPL Worker] Ready: ${msg.count} templates`);
+        } else if (msg.type === 'result' || msg.type === 'batchResult') {
+            const resolve = tplPendingJobs[msg.jobId];
+            if (resolve) { resolve(msg); delete tplPendingJobs[msg.jobId]; }
+        }
+    };
+}
+
+function workerMatchBatch(items) {
+    return new Promise((resolve) => {
+        const jobId = ++tplJobId;
+        tplPendingJobs[jobId] = (msg) => resolve(msg.results);
+        tplWorker.postMessage({ type: 'matchBatch', jobId, items, w: tplUpscaledSize.w, h: tplUpscaledSize.h });
+    });
+}
+
+// 二値マスク比較: キャプチャ原寸で二値化、テンプレートをアップスケールしてIoU比較
+function matchCharMask(grayVec, capW, capH) {
+    const { mask: capMask } = binarizeCapture(grayVec);
+    const tw = tplUpscaledSize.w;
+    const th = tplUpscaledSize.h;
+
+    let bestChar = '';
+    let bestScore = -1;
+    for (const [char, tplMask] of Object.entries(templateNorms)) {
+        const upTpl = upscaleMask(tplMask, tw, th, capW, capH);
+        const score = matchMaskIoU(capMask, upTpl);
+        if (dot > bestScore) { bestScore = dot; bestChar = char; }
+    }
+    return { char: bestChar, score: bestScore };
+}
+
+// --- マスク画像描画 (1=色, 0=透明) ---
+function renderMaskImage(mask, w, h, scale, color) {
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    const ctx = tmp.getContext('2d');
+    const imgData = ctx.createImageData(w, h);
+    const r = parseInt(color.slice(1, 3), 16) || 0;
+    const g = parseInt(color.slice(3, 5), 16) || 255;
+    const b = parseInt(color.slice(5, 7), 16) || 0;
+    for (let i = 0; i < mask.length; i++) {
+        if (mask[i]) {
+            imgData.data[i*4] = r; imgData.data[i*4+1] = g; imgData.data[i*4+2] = b; imgData.data[i*4+3] = 255;
+        }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    const cv = document.createElement('canvas');
+    cv.width = w * scale; cv.height = h * scale;
+    const cvCtx = cv.getContext('2d');
+    cvCtx.imageSmoothingEnabled = false;
+    cvCtx.drawImage(tmp, 0, 0, w * scale, h * scale);
+    cv.style.cssText = 'border:1px solid #333;';
+    return cv;
+}
+
+// --- キャプチャセルをテンプレートサイズにダウンスケールしてグレースケール化 ---
+function downscaleToTemplate(canvas, srcX, srcY, srcW, srcH) {
+    const tw = tplUpscaledSize.w;
+    const th = tplUpscaledSize.h;
+    const tmp = document.createElement('canvas');
+    tmp.width = tw; tmp.height = th;
+    const ctx = tmp.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, tw, th);
+    return canvasToGray(tmp, 0, 0, tw, th);
+}
+
+// --- Canvas to grayscale ---
+function canvasToGray(canvas, x, y, w, h) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imgData = ctx.getImageData(x || 0, y || 0, w || canvas.width, h || canvas.height);
+    const d = imgData.data;
+    const gray = new Float32Array((w || canvas.width) * (h || canvas.height));
+    for (let i = 0; i < gray.length; i++) {
+        gray[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+    }
+    return gray;
+}
+
+// --- Pixel variance (empty detection) ---
+function pixelVariance(gray) {
+    let sum = 0, sumSq = 0;
+    for (let i = 0; i < gray.length; i++) { sum += gray[i]; sumSq += gray[i] * gray[i]; }
+    const mean = sum / gray.length;
+    return sumSq / gray.length - mean * mean;
+}
+
+// --- Scan text in a cell/box (horizontal scan by charW) ---
+function scanText(canvas, charW, charH) {
+    const w = canvas.width, h = canvas.height;
+    const numRows = Math.max(1, Math.round(h / charH));
+    const rowH = h / numRows;
+    let text = '';
+    for (let row = 0; row < numRows; row++) {
+        const y = Math.round(row * rowH);
+        const rH = Math.min(Math.round(rowH), h - y);
+        // Scan horizontally
+        for (let x = 0; x <= w - charW; x += charW) {
+            // Downscale this char cell to 8x16
+            const cc = document.createElement('canvas');
+            cc.width = charW; cc.height = charH;
+            const ctx = cc.getContext('2d', { willReadFrequently: true });
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(canvas, x, y, charW, rH, 0, 0, charW, charH);
+            const gray = canvasToGray(cc, 0, 0, charW, charH);
+            if (pixelVariance(gray) < 50) continue;
+            const { char, score } = matchCharMask(gray, charW, charH);
+            if (score >= tplMatchThreshold) text += char;
+        }
+        if (row < numRows - 1 && numRows > 1) text += '\n';
+    }
+    return text.trim();
+}
+
+// --- Read box text (async: Worker使用) ---
+async function readBoxText(box) {
+    const canvas = cropBoxFromVideo(box);
+    if (!canvas) return '';
+    const tw = tplUpscaledSize.w;  // テンプレートのネイティブサイズ
+    const th = tplUpscaledSize.h;
+    const rows = box.rows || 0;
+    const cols = box.cols || 0;
+
+    // キャプチャセルを原寸でグレースケール化してバッチに詰める
+    const items = [];
+    let cellPositions = [];
+    let cellPixW, cellPixH;
+
+    if (rows > 0 && cols > 0) {
+        cellPixW = Math.round(canvas.width / cols);
+        cellPixH = Math.round(canvas.height / rows);
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const cc = document.createElement('canvas');
+                cc.width = cellPixW; cc.height = cellPixH;
+                const ctx = cc.getContext('2d', { willReadFrequently: true });
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(canvas,
+                    Math.round(c * cellPixW), Math.round(r * cellPixH),
+                    cellPixW, cellPixH, 0, 0, cellPixW, cellPixH);
+                const gray = canvasToGray(cc, 0, 0, cellPixW, cellPixH);
+                const variance = pixelVariance(gray);
+                items.push({ gray: Array.from(gray), variance, w: cellPixW, h: cellPixH });
+                cellPositions.push({ r, c });
+            }
+        }
+    } else {
+        cellPixW = canvas.width;
+        cellPixH = canvas.height;
+        const gray = canvasToGray(canvas, 0, 0, cellPixW, cellPixH);
+        const variance = pixelVariance(gray);
+        items.push({ gray: Array.from(gray), variance, w: cellPixW, h: cellPixH });
+        cellPositions.push({ r: 0, c: 0 });
+    }
+
+    if (items.length === 0) return '';
+
+    // Worker使用可能ならバッチ送信、なければメインスレッド
+    let results;
+    if (tplWorkerReady) {
+        results = await workerMatchBatch(items);
+    } else {
+        results = items.map(item => {
+            if (item.variance < 50) return { char: '', score: 0, variance: item.variance };
+            const { char, score } = matchCharMask(new Float32Array(item.gray), item.w || cellPixW, item.h || cellPixH);
+            return { char, score, variance: item.variance };
+        });
+    }
+
+    // 結果を組み立て
+    const texts = [];
+    const gridDebug = [];
+    let curRow = -1;
+    let rowDebug = [];
+
+    for (let i = 0; i < results.length; i++) {
+        const res = results[i];
+        const pos = cellPositions[i];
+        if (pos.r !== curRow) {
+            if (rowDebug.length > 0) gridDebug.push(rowDebug.join(' '));
+            rowDebug = [];
+            curRow = pos.r;
+        }
+        if (res.variance < 50) {
+            rowDebug.push('_');
+            continue;
+        }
+        const pct = Math.round(res.score * 100);
+        rowDebug.push(`${res.char}${pct}%`);
+        if (res.score >= tplMatchThreshold) texts.push(res.char);
+    }
+    if (rowDebug.length > 0) gridDebug.push(rowDebug.join(' '));
+
+    const debugEl = document.getElementById('tplDebugOutput');
+    if (debugEl) debugEl.textContent = gridDebug.join('\n');
+
+    return texts.join('');
+}
+
+// --- あいうえお表: テンプレート全文字を画像+一致率で表示 ---
+let tplEditorVariant = 'tall';
+let tplEditorEdits = {};  // { char: newChar } 未保存の編集
+
+function renderTplImage(tpl, charW, charH, scale) {
+    const tmp = document.createElement('canvas');
+    tmp.width = charW; tmp.height = charH;
+    const tmpCtx = tmp.getContext('2d');
+    const imgData = tmpCtx.createImageData(charW, charH);
+    for (let i = 0; i < tpl.pixels.length; i++) {
+        const v = tpl.pixels[i];
+        if (v < 0) {
+            // 透明（背景）
+            imgData.data[i*4] = 0; imgData.data[i*4+1] = 0; imgData.data[i*4+2] = 0; imgData.data[i*4+3] = 0;
+        } else {
+            const g = v >= 255 ? 30 : v;
+            imgData.data[i*4] = g; imgData.data[i*4+1] = g; imgData.data[i*4+2] = g; imgData.data[i*4+3] = 255;
+        }
+    }
+    tmpCtx.putImageData(imgData, 0, 0);
+    const cv = document.createElement('canvas');
+    cv.width = charW * scale; cv.height = charH * scale;
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tmp, 0, 0, charW * scale, charH * scale);
+    return cv;
+}
+
+function showTemplateTable() {
+    const container = document.getElementById('tplCharTable');
+    if (!container) return;
+    if (!templateData) { container.textContent = 'テンプレート未ロード'; return; }
+    container.innerHTML = '';
+    tplEditorEdits = {};
+
+    const variants = templateData.variants || { normal: templateData.templates };
+    const variantNames = Object.keys(variants);
+    const variantMeta = templateData.variant_meta || {};
+    const vmeta = variantMeta[tplEditorVariant] || templateData.meta || {};
+    const charW = vmeta.char_width || 10;
+    const charH = vmeta.char_height || 12;
+    const scale = charW <= 10 ? 3 : 2;
+
+    // タブ
+    const tabBar = document.createElement('div');
+    tabBar.style.cssText = 'display:flex;gap:4px;margin-bottom:8px;';
+    for (const vn of variantNames) {
+        const btn = document.createElement('button');
+        btn.textContent = vn === 'normal' ? '無機質' : vn === 'male' ? '男' : vn === 'female' ? '女' : vn;
+        btn.style.cssText = `background:${vn === tplEditorVariant ? '#e94560' : '#2a2a4a'};border:1px solid #3a3a5a;color:#fff;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;`;
+        btn.onclick = () => { tplEditorVariant = vn; showTemplateTable(); };
+        tabBar.appendChild(btn);
+    }
+    // 保存ボタン
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '保存';
+    saveBtn.style.cssText = 'background:#0a7;border:1px solid #0c9;color:#fff;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;margin-left:auto;';
+    saveBtn.onclick = saveTemplateEdits;
+    tabBar.appendChild(saveBtn);
+    container.appendChild(tabBar);
+
+    // 文字グリッド
+    const tplSet = variants[tplEditorVariant] || {};
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;';
+
+    for (const [char, tpl] of Object.entries(tplSet)) {
+        const cell = document.createElement('div');
+        cell.style.cssText = 'display:flex;flex-direction:column;align-items:center;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;padding:2px;width:36px;';
+
+        // テンプレート画像
+        const cv = renderTplImage(tpl, charW, charH, scale);
+        cv.style.cssText = 'display:block;';
+        cell.appendChild(cv);
+
+        // 編集可能な文字入力
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = char;
+        input.maxLength = 2;
+        input.dataset.origChar = char;
+        input.style.cssText = 'width:28px;text-align:center;background:#0a0a1a;border:1px solid #3a3a5a;color:#0f0;font-size:11px;padding:1px;border-radius:3px;';
+        input.onchange = (e) => {
+            const newVal = e.target.value;
+            if (newVal !== char) {
+                tplEditorEdits[char] = newVal;
+                e.target.style.borderColor = '#e94560';
+            } else {
+                delete tplEditorEdits[char];
+                e.target.style.borderColor = '#3a3a5a';
+            }
+        };
+        cell.appendChild(input);
+        grid.appendChild(cell);
+    }
+    container.appendChild(grid);
+
+    // 編集数表示
+    const info = document.createElement('div');
+    info.id = 'tplEditInfo';
+    info.style.cssText = 'color:#888;font-size:10px;margin-top:4px;';
+    info.textContent = `${Object.keys(tplSet).length} 文字`;
+    container.appendChild(info);
+}
+
+async function saveTemplateEdits() {
+    if (Object.keys(tplEditorEdits).length === 0) {
+        alert('変更なし');
+        return;
+    }
+    // Apply edits: rename characters in all variants
+    const variants = templateData.variants || {};
+    for (const [varName, tplSet] of Object.entries(variants)) {
+        for (const [oldChar, newChar] of Object.entries(tplEditorEdits)) {
+            if (tplSet[oldChar] && newChar) {
+                tplSet[newChar] = tplSet[oldChar];
+                if (newChar !== oldChar) delete tplSet[oldChar];
+            }
+        }
+    }
+    // Also update default templates
+    for (const [oldChar, newChar] of Object.entries(tplEditorEdits)) {
+        if (templateData.templates[oldChar] && newChar) {
+            templateData.templates[newChar] = templateData.templates[oldChar];
+            if (newChar !== oldChar) delete templateData.templates[oldChar];
+        }
+    }
+    // Save to file via server
+    try {
+        const r = await fetch('/api/templates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(templateData),
+        });
+        if (r.ok) {
+            console.log(`[TPL] Saved ${Object.keys(tplEditorEdits).length} edits`);
+            tplEditorEdits = {};
+            buildTemplateNorms();
+            showTemplateTable();
+        } else {
+            alert('保存失敗: ' + r.status);
+        }
+    } catch(e) {
+        alert('保存エラー: ' + e.message);
+    }
+}
+
+// --- 近似テスト: 最初のboxの最初のセルをキャプチャしてトップ10表示 ---
+function testMatchCell() {
+    const container = document.getElementById('tplTestResult');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const boxes = overlayConfig.boxes || [];
+    if (!boxes.length) { container.textContent = 'boxがありません'; return; }
+    if (!templateData) { container.textContent = 'テンプレート未ロード'; return; }
+
+    const box = boxes[0];
+    const canvas = cropBoxFromVideo(box);
+    if (!canvas) { container.textContent = '映像なし'; return; }
+
+    const variantMeta = templateData?.variant_meta || {};
+    const vmeta = variantMeta['tall'] || templateData?.meta || {};
+    const charW = vmeta.char_width || 8;
+    const charH = vmeta.char_height || 12;
+    const upW = tplUpscaledSize.w;
+    const upH = tplUpscaledSize.h;
+    const rows = box.rows || 0;
+    const cols = box.cols || 0;
+
+    // 全セルを処理（セルサイズそのまま、リサイズしない）
+    const cellList = [];
+    let cellPixW, cellPixH;
+    if (rows > 0 && cols > 0) {
+        cellPixW = Math.round(canvas.width / cols);
+        cellPixH = Math.round(canvas.height / rows);
+        // テンプレートをセルサイズに合わせて再構築
+        if (cellPixW !== tplUpscaledSize.w || cellPixH !== tplUpscaledSize.h) {
+            buildTemplateNorms();
+        }
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const cc = document.createElement('canvas');
+                cc.width = cellPixW; cc.height = cellPixH;
+                const ctx = cc.getContext('2d', { willReadFrequently: true });
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(canvas,
+                    Math.round(c * cellPixW), Math.round(r * cellPixH),
+                    cellPixW, cellPixH,
+                    0, 0, cellPixW, cellPixH);
+                cellList.push({ canvas: cc, label: `[${r},${c}]` });
+            }
+        }
+    } else {
+        // box全体 = 1文字
+        cellPixW = canvas.width; cellPixH = canvas.height;
+        if (cellPixW !== tplUpscaledSize.w || cellPixH !== tplUpscaledSize.h) {
+            buildTemplateNorms();
+        }
+        cellList.push({ canvas, label: `[0]` });
+    }
+
+    // 各セルのトップ5マッチを表示
+    const tplSet = templateData.templates || {};
+    for (const cell of cellList) {
+        const gray = canvasToGray(cell.canvas, 0, 0, cellPixW, cellPixH);
+        const variance = pixelVariance(gray);
+
+        const cellDiv = document.createElement('div');
+        cellDiv.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;border-bottom:1px solid #2a2a4a;padding:2px 0;';
+
+        // キャプチャ画像
+        const capImg = document.createElement('canvas');
+        capImg.width = upW * 2; capImg.height = upH * 2;
+        const capCtx = capImg.getContext('2d');
+        capCtx.imageSmoothingEnabled = false;
+        capCtx.drawImage(cell.canvas, 0, 0, upW * 2, upH * 2);
+        capImg.style.cssText = 'border:1px solid #555;';
+        cellDiv.appendChild(capImg);
+
+        // ラベル
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'font-size:10px;color:#888;width:40px;';
+        lbl.textContent = cell.label;
+        cellDiv.appendChild(lbl);
+
+        if (variance < 50) {
+            const empty = document.createElement('span');
+            empty.style.cssText = 'font-size:10px;color:#666;';
+            empty.textContent = '(空)';
+            cellDiv.appendChild(empty);
+            container.appendChild(cellDiv);
+            continue;
+        }
+
+        // 二値マスク比較でトップ5取得
+        const { mask: capMask } = binarizeCapture(gray);
+        const scores = [];
+        for (const [char, tplMask] of Object.entries(templateNorms)) {
+            scores.push({ char, score: matchMaskIoU(capMask, tplMask) });
+        }
+        scores.sort((a, b) => b.score - a.score);
+
+        // トップ5表示
+        for (let k = 0; k < Math.min(5, scores.length); k++) {
+            const s = scores[k];
+            const pct = Math.round(s.score * 100);
+            const matchDiv = document.createElement('div');
+            matchDiv.style.cssText = 'display:inline-flex;flex-direction:column;align-items:center;margin:0 3px;';
+
+            // テンプレート画像
+            const tpl = tplSet[s.char];
+            if (tpl) {
+                const tImg = document.createElement('canvas');
+                tImg.width = charW * 2; tImg.height = charH * 2;
+                const tCtx = tImg.getContext('2d');
+                const tmp = document.createElement('canvas');
+                tmp.width = charW; tmp.height = charH;
+                const tmpCtx = tmp.getContext('2d');
+                const imgData = tmpCtx.createImageData(charW, charH);
+                for (let i = 0; i < tpl.pixels.length; i++) {
+                    const v = Math.max(0, Math.min(255, tpl.pixels[i]));
+                    imgData.data[i*4] = v; imgData.data[i*4+1] = v; imgData.data[i*4+2] = v; imgData.data[i*4+3] = 255;
+                }
+                tmpCtx.putImageData(imgData, 0, 0);
+                tCtx.imageSmoothingEnabled = false;
+                tCtx.drawImage(tmp, 0, 0, charW * 2, charH * 2);
+                tImg.style.cssText = 'border:1px solid #333;';
+                matchDiv.appendChild(tImg);
+            }
+
+            const info = document.createElement('span');
+            info.style.cssText = `font-size:10px;color:${pct > 70 ? '#0f0' : pct > 40 ? '#ff0' : '#f44'};`;
+            info.textContent = `${s.char} ${pct}%`;
+            matchDiv.appendChild(info);
+
+            cellDiv.appendChild(matchDiv);
+        }
+
+        container.appendChild(cellDiv);
+    }
+}
+
+// --- 1文字テスト: 指定テンプレートとboxの近似率を表示 ---
+function testSingleChar() {
+    const container = document.getElementById('tplTestResult');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const char = document.getElementById('tplTestChar')?.value;
+    if (!char) { container.textContent = '文字を入力してください'; return; }
+    if (!templateData) { container.textContent = 'テンプレート未ロード'; return; }
+
+    const tplSet = templateData.templates || {};
+    const tpl = tplSet[char];
+    if (!tpl) { container.textContent = `"${char}" はテンプレートにありません`; return; }
+
+    const boxes = overlayConfig.boxes || [];
+    if (!boxes.length) { container.textContent = 'boxがありません'; return; }
+
+    const box = boxes[0];
+    const canvas = cropBoxFromVideo(box);
+    if (!canvas) { container.textContent = '映像なし'; return; }
+
+    const tw = tplUpscaledSize.w;  // テンプレートのネイティブサイズ
+    const th = tplUpscaledSize.h;
+    const cellW = (box.rows > 0 && box.cols > 0) ? Math.round(canvas.width / box.cols) : canvas.width;
+    const cellH = (box.rows > 0 && box.cols > 0) ? Math.round(canvas.height / box.rows) : canvas.height;
+
+    // ヘッダー
+    const header = document.createElement('div');
+    header.style.cssText = 'color:#0cf;font-size:12px;margin-bottom:8px;';
+    header.textContent = `「${char}」との比較 (キャプチャ: ${cellW}x${cellH}px → ${tw}x${th}にダウンスケール)`;
+    container.appendChild(header);
+
+    // テンプレート画像表示
+    const tplDiv = document.createElement('div');
+    tplDiv.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+    const tplLabel = document.createElement('span');
+    tplLabel.style.cssText = 'color:#888;font-size:11px;';
+    tplLabel.textContent = 'テンプレート:';
+    tplDiv.appendChild(tplLabel);
+    const tImg = renderTplImage(tpl, tw, th, 4);
+    tplDiv.appendChild(tImg);
+    // テンプレートマスク画像
+    const tplMask = buildTemplateMask(tpl.pixels);
+    const tMaskCanvas = renderMaskImage(tplMask, tw, th, 4, '#0f0');
+    const tMaskLabel = document.createElement('span');
+    tMaskLabel.style.cssText = 'color:#888;font-size:11px;';
+    tMaskLabel.textContent = 'マスク:';
+    tplDiv.appendChild(tMaskLabel);
+    tplDiv.appendChild(tMaskCanvas);
+    container.appendChild(tplDiv);
+
+    // 各セルとの比較
+    const rows = (box.rows > 0 && box.cols > 0) ? box.rows : 1;
+    const cols = (box.rows > 0 && box.cols > 0) ? box.cols : 1;
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            // キャプチャセルを原寸でグレースケール化
+            const cc = document.createElement('canvas');
+            cc.width = cellW; cc.height = cellH;
+            const ccCtx = cc.getContext('2d', { willReadFrequently: true });
+            ccCtx.imageSmoothingEnabled = false;
+            ccCtx.drawImage(canvas,
+                Math.round(c * cellW), Math.round(r * cellH),
+                cellW, cellH, 0, 0, cellW, cellH);
+            const gray = canvasToGray(cc, 0, 0, cellW, cellH);
+            const variance = pixelVariance(gray);
+
+            const cellDiv = document.createElement('div');
+            cellDiv.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0;padding:2px 0;border-bottom:1px solid #2a2a4a;';
+
+            // セル位置
+            const posLabel = document.createElement('span');
+            posLabel.style.cssText = 'font-size:10px;color:#888;width:40px;';
+            posLabel.textContent = `[${r},${c}]`;
+            cellDiv.appendChild(posLabel);
+
+            // キャプチャ原寸画像を表示
+            const capImg = document.createElement('canvas');
+            capImg.width = cellW; capImg.height = cellH;
+            capImg.getContext('2d').drawImage(cc, 0, 0);
+            capImg.style.cssText = 'border:1px solid #555;max-height:60px;';
+            cellDiv.appendChild(capImg);
+
+            if (variance < 50) {
+                const empty = document.createElement('span');
+                empty.style.cssText = 'font-size:10px;color:#666;';
+                empty.textContent = '(空)';
+                cellDiv.appendChild(empty);
+                container.appendChild(cellDiv);
+                continue;
+            }
+
+            // キャプチャの二値マスク（原寸）
+            const { mask: capMask } = binarizeCapture(gray);
+            const cMaskCanvas = renderMaskImage(capMask, cellW, cellH, 1, '#ff0');
+            cMaskCanvas.style.cssText = 'border:1px solid #333;max-height:60px;';
+            cellDiv.appendChild(cMaskCanvas);
+
+            // テンプレートマスクをキャプチャサイズにアップスケールしてIoU
+            const upTpl = upscaleMask(tplMask, tw, th, cellW, cellH);
+            const iou = matchMaskIoU(capMask, upTpl);
+            const pct = Math.round(iou * 100);
+            const scoreLabel = document.createElement('span');
+            scoreLabel.style.cssText = `font-size:14px;font-weight:bold;color:${pct > 70 ? '#0f0' : pct > 40 ? '#ff0' : '#f44'};`;
+            scoreLabel.textContent = `${pct}%`;
+            cellDiv.appendChild(scoreLabel);
+
+            container.appendChild(cellDiv);
+        }
+    }
+}
+
+// --- ゲーム画面からテンプレートキャプチャ ---
+const POKEFR_CHARMAP = {
+    hiragana: [
+        ['あ','い','う','え','お', 'な','に','ぬ','ね','の', 'や','ゆ','よ','！','？'],
+        ['か','き','く','け','こ', 'は','ひ','ふ','へ','ほ', 'わ','を','ん',null,null],
+        ['さ','し','す','せ','そ', 'ま','み','む','め','も', 'ゃ','ゅ','ょ','っ','ー'],
+        ['た','ち','つ','て','と', 'ら','り','る','れ','ろ', 'ぁ','ぃ','ぅ','ぇ','ぉ'],
+    ],
+    katakana: [
+        ['ア','イ','ウ','エ','オ', 'ナ','ニ','ヌ','ネ','ノ', 'ヤ','ユ','ヨ','！','？'],
+        ['カ','キ','ク','ケ','コ', 'ハ','ヒ','フ','ヘ','ホ', 'ワ','ヲ','ン',null,null],
+        ['サ','シ','ス','セ','ソ', 'マ','ミ','ム','メ','モ', 'ャ','ュ','ョ','ッ','ー'],
+        ['タ','チ','ツ','テ','ト', 'ラ','リ','ル','レ','ロ', 'ァ','ィ','ゥ','ェ','ォ'],
+    ],
+    abc: [
+        ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S'],
+        ['T','U','V','W','X','Y','Z', '0','1','2','3','4','5','6','7','8','9'],
+        ['a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s'],
+        ['t','u','v','w','x','y','z', '。','・','…','『','』','「','」','/','♂','♀'],
+    ],
+};
+
+async function captureFromScreen() {
+    const statusEl = document.getElementById('captureStatus');
+    const tab = document.getElementById('captureTab')?.value || 'hiragana';
+    const charMap = POKEFR_CHARMAP[tab];
+    if (!charMap) { if (statusEl) statusEl.textContent = '不明なタブ'; return; }
+
+    const boxes = overlayConfig.boxes || [];
+    if (!boxes.length) { if (statusEl) statusEl.textContent = 'boxがありません'; return; }
+
+    const box = boxes[0];
+    const rows = box.rows || 0;
+    const cols = box.cols || 0;
+    if (rows < 1 || cols < 1) { if (statusEl) statusEl.textContent = 'boxにrows/colsを設定してください'; return; }
+
+    const canvas = cropBoxFromVideo(box);
+    if (!canvas) { if (statusEl) statusEl.textContent = '映像なし'; return; }
+
+    const cellW = Math.round(canvas.width / cols);
+    const cellH = Math.round(canvas.height / rows);
+    if (statusEl) statusEl.textContent = `キャプチャ中... (${cellW}x${cellH})`;
+
+    // 既存テンプレートをロード（マージ用）
+    let existingData = templateData || { meta: {}, templates: {}, variants: {} };
+
+    const captured = {};
+    let count = 0;
+    for (let r = 0; r < Math.min(rows, charMap.length); r++) {
+        for (let c = 0; c < Math.min(cols, charMap[r]?.length || 0); c++) {
+            const ch = charMap[r][c];
+            if (!ch) continue;
+
+            const cc = document.createElement('canvas');
+            cc.width = cellW; cc.height = cellH;
+            const ctx = cc.getContext('2d', { willReadFrequently: true });
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(canvas,
+                Math.round(c * cellW), Math.round(r * cellH),
+                cellW, cellH, 0, 0, cellW, cellH);
+            const gray = canvasToGray(cc, 0, 0, cellW, cellH);
+            captured[ch] = { pixels: Array.from(gray), w: cellW, h: cellH };
+            count++;
+        }
+    }
+
+    // テンプレートデータにマージ（capturedバリアントとして保存）
+    if (!existingData.variants) existingData.variants = {};
+    if (!existingData.variants.captured) existingData.variants.captured = {};
+    Object.assign(existingData.variants.captured, captured);
+    // デフォルトtemplatesも更新
+    Object.assign(existingData.templates, captured);
+    existingData.meta.char_width = cellW;
+    existingData.meta.char_height = cellH;
+    existingData.meta.source = 'screen_capture';
+
+    // サーバーに保存
+    try {
+        const r = await fetch('/api/templates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(existingData),
+        });
+        if (r.ok) {
+            templateData = existingData;
+            buildTemplateNorms();
+            if (statusEl) statusEl.textContent = `${tab}: ${count}文字保存完了`;
+            console.log(`[TPL] Captured ${count} chars from ${tab} (${cellW}x${cellH})`);
+        } else {
+            if (statusEl) statusEl.textContent = '保存失敗';
+        }
+    } catch(e) {
+        if (statusEl) statusEl.textContent = 'エラー: ' + e.message;
+    }
+}
+
+// --- Force rescan ---
+function forceRescan() {
+    for (const key of Object.keys(boxPrevPixels)) delete boxPrevPixels[key];
+    prevWholeFrameRgb = null;
+    console.log('[TPL] Force rescan');
+}
+
+// --- Main 500ms loop ---
+function startTplLoop() {
+    if (tplLoopActive) return;
+    tplLoopActive = true;
+    setInterval(tplTick, 500);
+}
+
+async function tplTick() {
+    if (!tplReady) return;
     const boxes = overlayConfig.boxes || [];
     if (!boxes.length) return;
     const video = document.getElementById('videoEl');
     if (!video.videoWidth) return;
 
-    // -- 画面全体の変化チェック (画面遷移検知) --
+    // Screen transition check
     const wholeCanvas = document.createElement('canvas');
     wholeCanvas.width = 8; wholeCanvas.height = 8;
     const wholeCtx = wholeCanvas.getContext('2d', { willReadFrequently: true });
     wholeCtx.drawImage(video, 0, 0, 8, 8);
-    const wholeData = wholeCtx.getImageData(0, 0, 8, 8).data;
-    let wr = 0, wg = 0, wb = 0;
-    const wn = 64;
-    for (let i = 0; i < wholeData.length; i += 4) { wr += wholeData[i]; wg += wholeData[i+1]; wb += wholeData[i+2]; }
-    const curWhole = { r: wr/wn, g: wg/wn, b: wb/wn };
-
+    const curWhole = sampleAvgRgb(wholeCanvas);
     const screenTransition = rgbDiff(prevWholeFrameRgb, curWhole) > 40;
     if (screenTransition) {
-        // 画面遷移: 全boxのprev pixelをリセット
         for (const key of Object.keys(boxPrevPixels)) delete boxPrevPixels[key];
-        console.log('[OCR] Screen transition detected');
-        // 自動判別を試みる
+        console.log('[TPL] Screen transition');
         if (document.getElementById('autoDetectEnabled')?.checked) {
             tryAutoDetectScreen();
         }
     }
     prevWholeFrameRgb = curWhole;
 
-    // -- 各boxの変化チェック & OCRエンキュー --
+    // Process each box
+    const stateUpdate = {};
+    const debugLines = [];
     for (const box of boxes) {
         if (!box.id) continue;
         const cropCanvas = cropBoxFromVideo(box);
         if (!cropCanvas) continue;
         const cur = sampleAvgRgb(cropCanvas);
         const prev = boxPrevPixels[box.id];
-        if (screenTransition || rgbDiff(prev, cur) > OCR_CHANGE_THRESHOLD) {
-            boxPrevPixels[box.id] = cur;
-            if (box.type === 'hp_bar') {
-                // HP bar: ピクセル解析で%を計算
-                const pct = analyzeHpBar(cropCanvas);
-                fetch('/api/screen/state', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ [box.id]: `${pct}%` }),
-                }).catch(() => {});
-                console.log(`[HP] ${box.id}: ${pct}%`);
-            } else {
-                enqueueOcr(box.id, cropCanvas);
-            }
+        if (!screenTransition && rgbDiff(prev, cur) <= TPL_CHANGE_THRESHOLD) continue;
+        boxPrevPixels[box.id] = cur;
+
+        if (box.type === 'hp_bar') {
+            const pct = analyzeHpBar(cropCanvas);
+            stateUpdate[box.id] = `${pct}%`;
+            debugLines.push(`${box.id}: ${pct}%`);
+            continue;
         }
+
+        const text = await readBoxText(box);
+        if (text) {
+            stateUpdate[box.id] = text;
+            debugLines.push(`${box.id}: "${text}"`);
+        }
+    }
+
+    if (Object.keys(stateUpdate).length > 0) {
+        fetch('/api/screen/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(stateUpdate),
+        }).catch(() => {});
+        for (const line of debugLines) console.log(`[TPL] ${line}`);
+        const debugEl = document.getElementById('tplDebugOutput');
+        if (debugEl) debugEl.textContent = debugLines.join('\n');
     }
 }
 
@@ -2441,18 +3280,12 @@ connect();
 startGamepadPolling();
 loadMacros();
 
-// OCR初期化 (ページロード後に開始)
-window.addEventListener('load', () => {
-    initOcrWorker().then(() => {
-        startOcrLoop();
-    });
-});
-
-// 初回でもWorkerが準備できたらループ開始（loadイベント後に備え）
+// --- Init ---
+// Templates are loaded after game load (see setTimeout above)
 setTimeout(() => {
-    if (!ocrLoopActive && ocrWorkerReady) startOcrLoop();
+    if (!tplLoopActive && tplReady) startTplLoop();
     loadScreenSignatures();
-}, 3000);
+}, 5000);
 </script>
 </body>
 </html>

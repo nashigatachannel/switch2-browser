@@ -4,7 +4,7 @@
   "description": "フィールド画面用オーバーレイ設定",
   "grid": {
     "enabled": true,
-    "rows": 9,
+    "rows": 10,
     "cols": 15,
     "color": "#00ff00",
     "opacity": 0.5,
@@ -12,13 +12,15 @@
     "labelColor": "#ffff00",
     "labelSize": 9,
     "offsetX": 0.5,
-    "offsetY": 0.35
+    "offsetY": 0.35,
+    "obstacleDetect": true,
+    "obstacleThreshold": 75
   },
   "region": {
     "x": 0.12,
-    "y": 0.042,
+    "y": 0,
     "w": 0.813,
-    "h": 0.963
+    "h": 0.95
   },
   "clip": null,
   "notes": {

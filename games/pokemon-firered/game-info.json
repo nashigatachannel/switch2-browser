@@ -27,6 +27,11 @@
     "repeat_delay_ms": 100,
     "notes": "ポケモンFR内部30fps、最低2F=66ms入力維持"
   },
+  "ocr": {
+    "charset": "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんがぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽぁぃぅぇぉゃゅょっアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポァィゥェォャュョッABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789！？ー。・…『』「」/♂♀ ",
+    "empty_threshold": 5,
+    "notes": "charset=ニックネーム入力画面から取得した有効文字。濁音半濁音は未対応（後日追加）。empty_threshold=box内RGB分散がこれ以下なら空と判定"
+  },
   "screen_detect": {
     "method": "pixel_signature",
     "sample_points": 5,

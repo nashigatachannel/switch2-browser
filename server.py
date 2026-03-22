@@ -387,6 +387,27 @@ async def clear_screen_log():
     screen_log.clear()
     return JSONResponse({"ok": True})
 
+# --- Template API (read-only) ---
+@app.get("/api/templates")
+async def get_templates():
+    if not active_game_name:
+        return JSONResponse({"error": "no game loaded"}, status_code=400)
+    tpl_file = GAMES_DIR / active_game_name / "templates.json"
+    if not tpl_file.exists():
+        return JSONResponse({"error": "templates not found"}, status_code=404)
+    data = json.loads(tpl_file.read_text(encoding="utf-8"))
+    return JSONResponse(data)
+
+@app.post("/api/templates")
+async def save_templates(request: Request):
+    if not active_game_name:
+        return JSONResponse({"error": "no game loaded"}, status_code=400)
+    data = await request.json()
+    tpl_file = GAMES_DIR / active_game_name / "templates.json"
+    tpl_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    count = len(data.get("templates", {}))
+    return JSONResponse({"ok": True, "count": count})
+
 # --- Input API (AI/programmatic control) ---
 # Button name mapping (same as frontend BTN)
 INPUT_BTN = {

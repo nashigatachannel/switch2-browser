@@ -1,0 +1,10 @@
+# Temporary/generated
+.playwright-mcp/
+chars_out/
+screenshot*.png
+capture_*.png
+template_overview.png
+pywinauto-mcp.log
+CONTEXT_RESUME.md
+__pycache__/
+*.pyc
